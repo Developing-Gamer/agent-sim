@@ -257,7 +257,18 @@ pub fn snapshot(dev: &Device) -> Result<Snapshot> {
         return Err(phone::not_running(dev));
     };
     let _ = std::fs::remove_file(dir.join("front.json"));
-    let springboard = dump(&dir, sb, "ax-springboard.json", Duration::from_secs(5))?;
+    let springboard =
+        dump(&dir, sb, "ax-springboard.json", Duration::from_secs(5)).map_err(|e| {
+            // its hook is loaded (it answered before) but it is silent: the phone is hung, not missing a hook
+            if dir.join(format!("hooked-{}", sb.1)).exists() {
+                anyhow::anyhow!(
+                    "SpringBoard does not answer: the phone is hung (or still busy); {}",
+                    phone::HUNG_FIX
+                )
+            } else {
+                e
+            }
+        })?;
     wait_for(&dir.join("front.json"), Duration::from_secs(2))?;
     let front: Front = serde_json::from_str(&std::fs::read_to_string(dir.join("front.json"))?)?;
     let mut app_not_answering = false;

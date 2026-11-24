@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `snapshot` is no longer empty on a phone whose first-boot reset turned app accessibility off: every boot checks the
+  two settings and turns them back on (issue #8).
+- `status` reports a phone whose SpringBoard does not answer as `hung`, and `snapshot` and x86Sim commands that time
+  out say so and that `agent-sim up` restarts it (issue #6).
+- `launch` waits out 1.5 s after `terminate` of the same app, and `launch --logs` stops a running app itself, so a
+  quick relaunch does not die during startup (issue #6).
 - `location set|clear`, `addmedia`, `privacy grant|revoke|reset` and `push`, in the CLI and the MCP server.
 - `scroll` slows into its end point and holds before lifting, so the list stops where `scroll` returns and the next
   tap lands (it kept coasting in 5 of 6 tries before, 0 of 6 now).

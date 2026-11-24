@@ -125,6 +125,25 @@ fix_prefix() {
 	rm -rf "$pre" "$pre.workdir" 2>/dev/null || sudo -n rm -rf "$pre" "$pre.workdir"
 }
 
+# `agent-sim snapshot` reads what UIKit describes, and UIKit describes controls only while app accessibility is on
+# (setup turns it on, as Accessibility Inspector does in Apple's simulator). On a phone's first boot a preferences
+# migration can reset both keys to 0 after setup wrote them, and every snapshot is then empty (issue #8). Each boot
+# checks them and writes them back; a running phone takes the change at once.
+ensure_accessibility() {
+	local rr cur key off=0
+	rr=$(ls -d "$DATA"/runtimes/*/extracted/Library/Developer/CoreSimulator/Profiles/Runtimes/*/Contents/Resources/RuntimeRoot 2>/dev/null | head -1) || true
+	[ -x "$rr/usr/bin/defaults" ] || return 0
+	cur=$(cd "$DATA" && X86SIM_DEVICE=$DIR "$X" x86sim spawn "$rr/usr/bin/defaults" read com.apple.Accessibility 2>/dev/null) || true
+	for key in ApplicationAccessibilityEnabled AccessibilityEnabled; do
+		grep -q "^ *$key = 1;" <<<"$cur" || off=1
+	done
+	[ "$off" = 1 ] || return 0
+	for key in ApplicationAccessibilityEnabled AccessibilityEnabled; do
+		(cd "$DATA" && X86SIM_DEVICE=$DIR "$X" x86sim spawn "$rr/usr/bin/defaults" write com.apple.Accessibility "$key" -bool true >/dev/null 2>&1) || true
+	done
+	echo "phone.sh: $DEVICE: turned on app accessibility (it was off)" >&2
+}
+
 case $ACTION in
 start)
 	stop_phone
@@ -188,6 +207,7 @@ wait)
 		done
 		if X86SIM_DEVICE=$DIR SIMFB_RING_LINUX=$RING "$X" x86sim wait home 30 >/dev/null 2>&1; then
 			echo "phone.sh: $DEVICE home screen after $(($(date +%s) - start)) s"
+			ensure_accessibility
 			exit 0
 		fi
 		systemctl --user is-active --quiet "$UNIT" || { echo "phone.sh: $DEVICE stopped while booting" >&2; exit 1; }

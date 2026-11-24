@@ -38,7 +38,10 @@ pub fn status() -> Result<()> {
             .and_then(|m| m.get("SIMULATOR_MODEL_IDENTIFIER").cloned())
             .unwrap_or_default();
         let state = match phone::health(&dev) {
-            phone::Health::Running => "running",
+            phone::Health::Running => match phone::springboard_answers(&dev) {
+                Some(false) => "hung (SpringBoard does not answer; `agent-sim up` restarts it)",
+                _ => "running",
+            },
             phone::Health::Stopped => "stopped",
             phone::Health::Crashed => {
                 "crashed (Darling's server exited; `agent-sim up` restarts it)"
@@ -374,7 +377,6 @@ fn launch_args(
     let mut out = vec!["launch".to_string()];
     if logs {
         out.push("--oslog".into());
-        out.push("--terminate-running-process".into());
     }
     for entry in env {
         let Some((key, _)) = entry.split_once('=') else {
@@ -400,8 +402,17 @@ pub fn launch(
 ) -> Result<String> {
     let owned = launch_args(bundle, logs, env, app_args)?;
     let args: Vec<&str> = owned.iter().map(String::as_str).collect();
+    // os_log capture starts with the process, so a running app is stopped first: here, where the exit is awaited and
+    // the settle time below applies, rather than by x86Sim's own stop-and-start inside one command (issue #6)
+    if logs && phone::x86sim_run(dev, &["pidof", bundle])?.status.success() {
+        terminate(dev, bundle)?;
+    }
+    settle_after_terminate(dev, bundle);
     // an app started right after it was stopped sometimes dies during startup: start it again once
     for attempt in 0..2 {
+        if attempt == 1 {
+            std::thread::sleep(RELAUNCH_SETTLE);
+        }
         let out = phone::x86sim_ok(dev, &args).map_err(|e| {
             if format!("{e:#}").contains("returned nil for") {
                 anyhow::anyhow!("{bundle} is not installed (`agent-sim apps --all` lists what is)")
@@ -422,6 +433,43 @@ pub fn launch(
     unreachable!()
 }
 
+/// How long after an app was stopped before it is started again. RunningBoard and FrontBoard are still tearing the
+/// old process down, and a launch inside that window dies during startup, and after a few in a row can leave
+/// SpringBoard unresponsive (issue #6).
+const RELAUNCH_SETTLE: Duration = Duration::from_millis(1500);
+
+/// The file whose modification time says when `terminate` last finished with `bundle`.
+fn terminated_marker(dev: &Device, bundle: &str) -> Result<PathBuf> {
+    let safe: String = bundle
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    Ok(phone::state_dir(dev)?.join(format!("terminated-{safe}")))
+}
+
+/// What is left of the settle time for an app stopped `age` ago, if anything.
+fn settle_left(age: Duration) -> Option<Duration> {
+    RELAUNCH_SETTLE.checked_sub(age).filter(|d| !d.is_zero())
+}
+
+/// Waits out what is left of the settle time when `bundle` was stopped a moment ago (no wait otherwise).
+fn settle_after_terminate(dev: &Device, bundle: &str) {
+    let age = terminated_marker(dev, bundle)
+        .ok()
+        .and_then(|m| std::fs::metadata(m).ok())
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.elapsed().ok());
+    if let Some(left) = age.and_then(settle_left) {
+        std::thread::sleep(left);
+    }
+}
+
 pub fn terminate(dev: &Device, bundle: &str) -> Result<String> {
     if let Err(e) = phone::x86sim_ok(dev, &["terminate", bundle]) {
         if format!("{e:#}").contains("not running") {
@@ -437,6 +485,9 @@ pub fn terminate(dev: &Device, bundle: &str) -> Result<String> {
             break;
         }
         std::thread::sleep(Duration::from_millis(200));
+    }
+    if let Ok(marker) = terminated_marker(dev, bundle) {
+        let _ = std::fs::write(marker, b"");
     }
     Ok(format!("terminated {bundle}"))
 }
@@ -1037,9 +1088,10 @@ pub fn record(dev: &Device, out: &Path, secs: f64, fps: u32) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        TypeStep, drag_progress, launch_args, parse_lat_lon, rotate, type_steps, validate_privacy,
-        validate_push_payload,
+        RELAUNCH_SETTLE, TypeStep, drag_progress, launch_args, parse_lat_lon, rotate, settle_left,
+        type_steps, validate_privacy, validate_push_payload,
     };
+    use std::time::Duration;
 
     #[test]
     fn launch_args_forwards_logs_env_and_app_args() {
@@ -1055,7 +1107,6 @@ mod tests {
             vec![
                 "launch",
                 "--oslog",
-                "--terminate-running-process",
                 "--env",
                 "A=1",
                 "--env",
@@ -1065,6 +1116,17 @@ mod tests {
                 "YES",
             ]
         );
+    }
+
+    #[test]
+    fn relaunch_waits_only_for_what_is_left_of_the_settle_time() {
+        assert_eq!(settle_left(Duration::ZERO), Some(RELAUNCH_SETTLE));
+        assert_eq!(
+            settle_left(Duration::from_millis(1000)),
+            Some(Duration::from_millis(500))
+        );
+        assert_eq!(settle_left(RELAUNCH_SETTLE), None);
+        assert_eq!(settle_left(Duration::from_secs(60)), None);
     }
 
     #[test]

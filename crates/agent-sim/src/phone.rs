@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 /// The phone's settings from its sim.env (screen size, scale, name...).
 pub fn sim_env(dev: &Device) -> Result<HashMap<String, String>> {
@@ -210,7 +211,46 @@ pub fn x86sim_run(dev: &Device, args: &[&str]) -> Result<Output> {
 
 /// Like x86sim_run, but fails with x86Sim's own message when it fails.
 pub fn x86sim_ok(dev: &Device, args: &[&str]) -> Result<String> {
-    x86sim_check(args, x86sim_run(dev, args)?)
+    x86sim_check(args, x86sim_run(dev, args)?).map_err(|e| hung_hint(dev, e))
+}
+
+/// How long SpringBoard may stay silent before the phone counts as hung. It answers in milliseconds when it is well
+/// and in seconds while a boot keeps every core busy.
+const HUNG_AFTER: Duration = Duration::from_secs(8);
+
+/// Whether SpringBoard answers a request through agent-sim's hook. `Some(false)` is a phone whose processes exist
+/// but which does not respond (issue #6: after rapid relaunches SpringBoard stopped answering while `status` kept
+/// saying running); `None` is a phone that cannot be asked (hooks not loaded, or SpringBoard still starting).
+pub fn springboard_answers(dev: &Device) -> Option<bool> {
+    let (linux, inner) = *process_ids(dev, |_, exe| exe == "SpringBoard")
+        .ok()?
+        .first()?;
+    let dir = data_dir(dev).join("tmp/agent-sim");
+    let file = dir.join("ax-springboard.json");
+    let _ = std::fs::remove_file(&file);
+    ask_hook(&dir, linux, inner).ok()?;
+    let start = Instant::now();
+    while start.elapsed() < HUNG_AFTER {
+        if file.exists() {
+            return Some(true);
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    Some(false)
+}
+
+/// What to do about a phone that does not answer.
+pub const HUNG_FIX: &str = "`agent-sim up` restarts it (about 30 s)";
+
+/// An x86Sim command that timed out on a phone whose SpringBoard is silent too: say the phone is hung.
+fn hung_hint(dev: &Device, e: anyhow::Error) -> anyhow::Error {
+    let msg = format!("{e:#}");
+    if msg.contains("no answer in") && springboard_answers(dev) == Some(false) {
+        return anyhow::anyhow!(
+            "{msg}; the phone is hung (SpringBoard does not answer): {HUNG_FIX}"
+        );
+    }
+    e
 }
 
 /// Like x86sim_ok, piping `input` on stdin (used for JSON payloads without inheriting MCP stdio).
