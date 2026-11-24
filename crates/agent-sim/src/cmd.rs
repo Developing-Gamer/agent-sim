@@ -190,21 +190,44 @@ pub fn tap(dev: &Device, target: &[String], hold_ms: u64) -> Result<String> {
     Ok(format!("tapped {what}"))
 }
 
-pub fn swipe(dev: &Device, from: (f64, f64), to: (f64, f64), ms: u64) -> Result<String> {
+fn drag_progress(t: f64, ease_out: bool) -> f64 {
+    if ease_out {
+        1.0 - (1.0 - t).powi(3)
+    } else {
+        t
+    }
+}
+
+fn drag(dev: &Device, from: (f64, f64), to: (f64, f64), ms: u64, hold_ms: u64) -> Result<()> {
     let scr = Screen::of(dev)?;
     let mut h = hid(dev);
     let steps = (ms / 16).clamp(4, 120);
+    let ease_out = hold_ms > 0;
     let (a, b) = scr.unit(from.0, from.1);
     h.touch("down", a, b)?;
     for i in 1..=steps {
-        let t = i as f64 / steps as f64;
+        let t = drag_progress(i as f64 / steps as f64, ease_out);
         let (x, y) = (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t);
         let (u, v) = scr.unit(x, y);
         std::thread::sleep(Duration::from_millis(ms / steps));
         h.touch("move", u, v)?;
     }
     let (u, v) = scr.unit(to.0, to.1);
+    if hold_ms > 0 {
+        // Hold stationary at the endpoint while continuing to send move samples so UIKit and Flutter
+        // velocity trackers see near-zero release velocity and do not start inertial deceleration.
+        let until = Instant::now() + Duration::from_millis(hold_ms);
+        while Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(16));
+            h.touch("move", u, v)?;
+        }
+    }
     h.touch("up", u, v)?;
+    Ok(())
+}
+
+pub fn swipe(dev: &Device, from: (f64, f64), to: (f64, f64), ms: u64) -> Result<String> {
+    drag(dev, from, to, ms, 0)?;
     Ok(format!(
         "swiped ({:.0},{:.0}) to ({:.0},{:.0})",
         from.0, from.1, to.0, to.1
@@ -212,6 +235,7 @@ pub fn swipe(dev: &Device, from: (f64, f64), to: (f64, f64), ms: u64) -> Result<
 }
 
 /// Scrolls the content: `down` shows what is below (the finger moves up), as on a phone.
+/// Slows into the endpoint and holds briefly before lifting so the next tap is not eaten by scroll deceleration.
 pub fn scroll(dev: &Device, dir: &str, amount: f64) -> Result<String> {
     let scr = Screen::of(dev)?;
     let (cx, cy) = (scr.width / 2.0, scr.height / 2.0);
@@ -223,7 +247,7 @@ pub fn scroll(dev: &Device, dir: &str, amount: f64) -> Result<String> {
         "right" => ((cx + d / 2.0, cy), (cx - d / 2.0, cy)),
         _ => bail!("scroll up, down, left or right"),
     };
-    swipe(dev, from, to, 300)?;
+    drag(dev, from, to, 300, 120)?;
     Ok(format!("scrolled {dir}"))
 }
 
@@ -741,7 +765,20 @@ pub fn record(dev: &Device, out: &Path, secs: f64, fps: u32) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::rotate;
+    use super::{drag_progress, rotate};
+
+    #[test]
+    fn drag_progress_eases_out_at_endpoint() {
+        assert_eq!(drag_progress(0.0, false), 0.0);
+        assert_eq!(drag_progress(0.5, false), 0.5);
+        assert_eq!(drag_progress(1.0, false), 1.0);
+        assert_eq!(drag_progress(0.0, true), 0.0);
+        assert_eq!(drag_progress(1.0, true), 1.0);
+        // Final step delta is much smaller than initial step delta when easing out
+        let first_step = drag_progress(0.1, true) - drag_progress(0.0, true);
+        let last_step = drag_progress(1.0, true) - drag_progress(0.9, true);
+        assert!(last_step < first_step * 0.05);
+    }
 
     // a 2x1 image (red, green) turned each way
     #[test]
