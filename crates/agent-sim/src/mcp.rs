@@ -63,6 +63,30 @@ fn tools() -> Value {
             &["x1", "y1", "x2", "y2"]
         ),
         tool(
+            "pinch",
+            "Two-finger pinch centered at (cx, cy) in screen points: finger half-spacing goes from r1 to r2 (r2 > r1 zooms in, r2 < r1 zooms out).",
+            json!({
+                "cx": {"type": "number"},
+                "cy": {"type": "number"},
+                "r1": {"type": "number", "description": "Starting half-distance between fingers in screen points"},
+                "r2": {"type": "number", "description": "Ending half-distance between fingers in screen points"},
+                "ms": {"type": "integer", "description": "Duration in ms, default 500"}
+            }),
+            &["cx", "cy", "r1", "r2"]
+        ),
+        tool(
+            "orientation",
+            "Get or set the phone's orientation.",
+            json!({"name": {"type": "string", "enum": cmd::ORIENTATIONS, "description": "Omit to read current orientation"}}),
+            &[]
+        ),
+        tool(
+            "rotate",
+            "Rotate the phone 90 degrees left (counterclockwise) or right (clockwise).",
+            json!({"direction": {"type": "string", "enum": ["left", "right"]}}),
+            &["direction"]
+        ),
+        tool(
             "press",
             "Press a hardware button: home, lock, volup, voldown, siri, action.",
             json!({"button": {"type": "string"}}),
@@ -285,6 +309,31 @@ fn call(default_device: &str, name: &str, args: &Value) -> Result<Value> {
             )?;
             then_snapshot(&dev, done)
         }
+        "pinch" => {
+            let ms = args.get("ms").and_then(Value::as_u64).unwrap_or(500);
+            let done = cmd::pinch(
+                &dev,
+                f(args, "cx")?,
+                f(args, "cy")?,
+                f(args, "r1")?,
+                f(args, "r2")?,
+                ms,
+            )?;
+            then_snapshot(&dev, done)
+        }
+        "orientation" => {
+            let name = args.get("name").and_then(Value::as_str);
+            let done = cmd::set_orientation(&dev, name)?;
+            if name.is_some() {
+                then_snapshot(&dev, done)
+            } else {
+                text(done)
+            }
+        }
+        "rotate" => {
+            let done = cmd::rotate_device(&dev, s(args, "direction")?)?;
+            then_snapshot(&dev, done)
+        }
         "press" => {
             let done = cmd::press(&dev, s(args, "button")?)?;
             then_snapshot(&dev, done)
@@ -477,7 +526,15 @@ mod tests {
             assert_eq!(t["inputSchema"]["type"], "object");
         }
         let names: Vec<&str> = arr.iter().filter_map(|t| t["name"].as_str()).collect();
-        for want in ["location", "addmedia", "privacy", "push"] {
+        for want in [
+            "location",
+            "addmedia",
+            "privacy",
+            "push",
+            "pinch",
+            "orientation",
+            "rotate",
+        ] {
             assert!(names.contains(&want), "missing MCP tool {want}");
         }
     }

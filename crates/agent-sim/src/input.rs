@@ -117,6 +117,27 @@ impl Hid {
         }
     }
 
+    /// Two-finger touch (`phase` is down, move or up); coordinates are 0..1 on the physical panel.
+    pub fn touch2(&mut self, phase: &str, p1: (f64, f64), p2: (f64, f64)) -> Result<()> {
+        let (x1, y1) = (p1.0.clamp(0.0, 1.0), p1.1.clamp(0.0, 1.0));
+        let (x2, y2) = (p2.0.clamp(0.0, 1.0), p2.1.clamp(0.0, 1.0));
+        match phase {
+            "down" => {
+                self.last_down = Instant::now();
+                self.send(&format!("touch2 down {x1:.5} {y1:.5} {x2:.5} {y2:.5}"))
+            }
+            "move" => self.send(&format!("touch2 move {x1:.5} {y1:.5} {x2:.5} {y2:.5}")),
+            "up" => {
+                let held = self.last_down.elapsed();
+                if held < MIN_TAP {
+                    std::thread::sleep(MIN_TAP - held);
+                }
+                self.send(&format!("touch2 up {x1:.5} {y1:.5} {x2:.5} {y2:.5}"))
+            }
+            _ => Ok(()),
+        }
+    }
+
     /// `name` is home, lock, volup or voldown.
     pub fn button(&mut self, name: &str, down: bool) -> Result<()> {
         if !matches!(name, "home" | "lock" | "volup" | "voldown") {

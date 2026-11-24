@@ -101,6 +101,25 @@ enum Command {
         #[arg(long, default_value_t = 300)]
         ms: u64,
     },
+    /// Two-finger pinch centered at (cx, cy) in screen points: finger half-spacing goes from r1 to r2 (r2 > r1 zooms in).
+    Pinch {
+        cx: f64,
+        cy: f64,
+        r1: f64,
+        r2: f64,
+        #[arg(long, default_value_t = 500)]
+        ms: u64,
+    },
+    /// Print or set the device orientation (portrait, portraitUpsideDown, landscapeLeft, landscapeRight, faceUp, faceDown).
+    Orientation {
+        #[arg(value_parser = ["portrait", "portraitUpsideDown", "landscapeLeft", "landscapeRight", "faceUp", "faceDown"])]
+        name: Option<String>,
+    },
+    /// Rotate the phone 90 degrees left or right.
+    Rotate {
+        #[arg(value_parser = ["left", "right"])]
+        direction: String,
+    },
     /// Press a button: home, lock, volup, voldown, siri, action...
     Press { button: String },
     /// Install an app: an .ipa (device builds are converted for the simulator) or a simulator .app.
@@ -342,6 +361,9 @@ fn main() -> Result<()> {
         }
         Command::Scroll { direction, amount } => say(cmd::scroll(&dev()?, &direction, amount)),
         Command::Swipe { x1, y1, x2, y2, ms } => say(cmd::swipe(&dev()?, (x1, y1), (x2, y2), ms)),
+        Command::Pinch { cx, cy, r1, r2, ms } => say(cmd::pinch(&dev()?, cx, cy, r1, r2, ms)),
+        Command::Orientation { name } => say(cmd::set_orientation(&dev()?, name.as_deref())),
+        Command::Rotate { direction } => say(cmd::rotate_device(&dev()?, &direction)),
         Command::Press { button } => say(cmd::press(&dev()?, &button)),
         Command::Install { path } => say(cmd::install(&dev()?, &path)),
         Command::Uninstall { bundle_id } => say(cmd::uninstall(&dev()?, &bundle_id)),
