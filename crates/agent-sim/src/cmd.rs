@@ -191,11 +191,7 @@ pub fn tap(dev: &Device, target: &[String], hold_ms: u64) -> Result<String> {
 }
 
 fn drag_progress(t: f64, ease_out: bool) -> f64 {
-    if ease_out {
-        1.0 - (1.0 - t).powi(3)
-    } else {
-        t
-    }
+    if ease_out { 1.0 - (1.0 - t).powi(3) } else { t }
 }
 
 fn drag(dev: &Device, from: (f64, f64), to: (f64, f64), ms: u64, hold_ms: u64) -> Result<()> {
@@ -883,10 +879,7 @@ fn validate_privacy<'a>(
     if action != "reset" && bundle.is_none() {
         bail!("privacy {action} requires a bundle id");
     }
-    if action == "reset"
-        && matches!(service, "location" | "location-always")
-        && bundle.is_none()
-    {
+    if action == "reset" && matches!(service, "location" | "location-always") && bundle.is_none() {
         bail!("privacy reset {service} requires a bundle id");
     }
     Ok(bundle)
@@ -929,7 +922,9 @@ fn validate_push_payload(bundle_id: Option<&str>, bytes: &[u8]) -> Result<String
                 .map(str::trim)
                 .filter(|b| !b.is_empty())
         })
-        .context("push requires a bundle id (argument or \"Simulator Target Bundle\" in the payload)")?;
+        .context(
+            "push requires a bundle id (argument or \"Simulator Target Bundle\" in the payload)",
+        )?;
     Ok(target.to_string())
 }
 
@@ -1113,8 +1108,14 @@ mod tests {
 
     #[test]
     fn lat_lon_parsing_and_bounds() {
-        assert_eq!(parse_lat_lon("51.5074,-0.1278").unwrap(), (51.5074, -0.1278));
-        assert_eq!(parse_lat_lon(" -33.8688 , 151.2093 ").unwrap(), (-33.8688, 151.2093));
+        assert_eq!(
+            parse_lat_lon("51.5074,-0.1278").unwrap(),
+            (51.5074, -0.1278)
+        );
+        assert_eq!(
+            parse_lat_lon(" -33.8688 , 151.2093 ").unwrap(),
+            (-33.8688, 151.2093)
+        );
         assert!(parse_lat_lon("91,0").is_err());
         assert!(parse_lat_lon("0,181").is_err());
         assert!(parse_lat_lon("51.5").is_err());

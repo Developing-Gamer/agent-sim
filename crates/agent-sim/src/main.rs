@@ -318,7 +318,12 @@ fn main() -> Result<()> {
             action,
             service,
             bundle_id,
-        } => say(cmd::privacy(&dev()?, &action, &service, bundle_id.as_deref())),
+        } => say(cmd::privacy(
+            &dev()?,
+            &action,
+            &service,
+            bundle_id.as_deref(),
+        )),
         Command::Push { args } => say(cmd::push_cli(&dev()?, &args)),
         Command::Clipboard { text } => say(cmd::clipboard(&dev()?, text.as_deref())),
         Command::Record { out, secs, fps } => say(cmd::record(
