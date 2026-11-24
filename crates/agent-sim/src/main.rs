@@ -141,7 +141,7 @@ enum Command {
         #[arg(value_parser = ["light", "dark"])]
         mode: String,
     },
-    /// The phone's clipboard: print it, or set it to TEXT.
+    /// Set the phone's clipboard to TEXT (reading is not supported yet).
     Clipboard { text: Option<String> },
     /// Override the status bar for clean screenshots (time, battery), or --clear.
     StatusBar {
