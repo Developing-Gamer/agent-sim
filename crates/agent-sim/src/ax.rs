@@ -42,8 +42,11 @@ impl Element {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Snapshot {
-    /// the app in front (bundle id), or None on the home screen
+    /// the app in front (bundle id), or None on the home screen / lock screen
     pub app: Option<String>,
+    /// the device is on the Lock Screen (Cover Sheet UI locked)
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub locked: bool,
     /// the app in front did not answer (still starting, or busy): only SpringBoard's elements are listed
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub app_not_answering: bool,
@@ -77,6 +80,8 @@ struct RawElement {
 struct Front {
     bundle: Option<String>,
     pid: u32,
+    #[serde(default)]
+    locked: bool,
 }
 
 fn role(traits: &[String]) -> &'static str {
@@ -261,28 +266,32 @@ pub fn snapshot(dev: &Device) -> Result<Snapshot> {
     wait_for(&dir.join("front.json"), Duration::from_secs(2))?;
     let front: Front = serde_json::from_str(&std::fs::read_to_string(dir.join("front.json"))?)?;
     let mut app_not_answering = false;
-    let app = match (front.pid, &front.bundle) {
-        (p, Some(_)) if p > 0 => {
-            let pids = phone::processes(dev, |inner, _| inner == p)?;
-            match pids.first() {
-                Some(&linux) => {
-                    match dump(
-                        &dir,
-                        (linux, p),
-                        &format!("ax-{p}.json"),
-                        Duration::from_secs(3),
-                    ) {
-                        Ok(d) => Some(d),
-                        Err(_) => {
-                            app_not_answering = true;
-                            None
+    let app = if front.locked {
+        None
+    } else {
+        match (front.pid, &front.bundle) {
+            (p, Some(_)) if p > 0 => {
+                let pids = phone::processes(dev, |inner, _| inner == p)?;
+                match pids.first() {
+                    Some(&linux) => {
+                        match dump(
+                            &dir,
+                            (linux, p),
+                            &format!("ax-{p}.json"),
+                            Duration::from_secs(3),
+                        ) {
+                            Ok(d) => Some(d),
+                            Err(_) => {
+                                app_not_answering = true;
+                                None
+                            }
                         }
                     }
+                    None => None,
                 }
-                None => None,
             }
+            _ => None,
         }
-        _ => None,
     };
 
     // web views: their content is in WebKit's WebContent processes, in points from the web view's content origin
@@ -291,8 +300,8 @@ pub fn snapshot(dev: &Device) -> Result<Snapshot> {
         _ => Vec::new(),
     };
 
-    // reading order: system alerts over everything, web content, the app, the home screen when no app is in front,
-    // the status bar
+    // reading order: system alerts (and Cover Sheet when locked) over everything, web content, the app,
+    // the home screen when unlocked with no app in front, the status bar
     let mut parts: Vec<(&str, &RawWindow)> = Vec::new();
     let sb_windows = |pred: &dyn Fn(&RawWindow) -> bool| -> Vec<(&str, &RawWindow)> {
         let mut v: Vec<_> = springboard
@@ -307,15 +316,17 @@ pub fn snapshot(dev: &Device) -> Result<Snapshot> {
     parts.extend(sb_windows(&|w| {
         w.level > 1000.0 && !w.class.contains("StatusBar")
     }));
-    parts.extend(web.iter().map(|w| ("WebContent", w)));
-    if let Some(a) = &app {
-        let mut v: Vec<_> = a.windows.iter().map(|w| (a.process.as_str(), w)).collect();
-        v.sort_by(|x, y| y.1.level.total_cmp(&x.1.level));
-        parts.extend(v);
-    } else if !app_not_answering {
-        parts.extend(sb_windows(&|w| {
-            w.level <= 1000.0 && !w.class.contains("StatusBar")
-        }));
+    if !front.locked {
+        parts.extend(web.iter().map(|w| ("WebContent", w)));
+        if let Some(a) = &app {
+            let mut v: Vec<_> = a.windows.iter().map(|w| (a.process.as_str(), w)).collect();
+            v.sort_by(|x, y| y.1.level.total_cmp(&x.1.level));
+            parts.extend(v);
+        } else if !app_not_answering {
+            parts.extend(sb_windows(&|w| {
+                w.level <= 1000.0 && !w.class.contains("StatusBar")
+            }));
+        }
     }
     parts.extend(sb_windows(&|w| w.class.contains("StatusBar")));
 
@@ -355,7 +366,12 @@ pub fn snapshot(dev: &Device) -> Result<Snapshot> {
         }
     }
     let snap = Snapshot {
-        app: front.bundle.filter(|_| app.is_some() || app_not_answering),
+        app: if front.locked {
+            None
+        } else {
+            front.bundle.filter(|_| app.is_some() || app_not_answering)
+        },
+        locked: front.locked,
         app_not_answering,
         elements,
     };
@@ -392,15 +408,18 @@ fn quote(s: &str) -> String {
 
 /// One line per element: `@e3 button "General"`, with its value, states and center point.
 pub fn format(s: &Snapshot) -> String {
-    let mut out = format!(
-        "{}\n",
+    let header = if s.locked {
+        "lock screen".to_string()
+    } else {
         match &s.app {
-            Some(a) if s.app_not_answering =>
-                format!("app {a} (not answering yet: starting or busy; snapshot again in a moment)"),
+            Some(a) if s.app_not_answering => {
+                format!("app {a} (not answering yet: starting or busy; snapshot again in a moment)")
+            }
             Some(a) => format!("app {a}"),
             None => "home screen".to_string(),
         }
-    );
+    };
+    let mut out = format!("{header}\n");
     for e in &s.elements {
         let (x, y) = e.center();
         out.push_str(&format!("@{} {}", e.reference, e.role));
@@ -494,6 +513,7 @@ mod tests {
         };
         let s = Snapshot {
             app: None,
+            locked: false,
             app_not_answering: false,
             elements: vec![
                 el("e1", "heading", "Sign in"),
@@ -503,5 +523,23 @@ mod tests {
         };
         assert_eq!(find(&s, "sign in").unwrap().reference, "e2");
         assert_eq!(find(&s, "continue").unwrap().reference, "e3");
+    }
+
+    #[test]
+    fn format_distinguishes_lock_screen_from_home_screen() {
+        let locked = Snapshot {
+            app: None,
+            locked: true,
+            app_not_answering: false,
+            elements: vec![],
+        };
+        assert_eq!(format(&locked), "lock screen\n");
+        let home = Snapshot {
+            app: None,
+            locked: false,
+            app_not_answering: false,
+            elements: vec![],
+        };
+        assert_eq!(format(&home), "home screen\n");
     }
 }
