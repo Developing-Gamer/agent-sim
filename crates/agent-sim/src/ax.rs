@@ -44,6 +44,12 @@ impl Element {
 pub struct Snapshot {
     /// the app in front (bundle id), or None on the home screen
     pub app: Option<String>,
+    /// hosted modal UI presented over the app (for example ExtensionKit PhotosPicker), when active
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modal: Option<String>,
+    /// the hosted modal did not answer (still starting, or busy)
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub modal_not_answering: bool,
     /// the app in front did not answer (still starting, or busy): only SpringBoard's elements are listed
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub app_not_answering: bool,
@@ -77,6 +83,10 @@ struct RawElement {
 struct Front {
     bundle: Option<String>,
     pid: u32,
+    #[serde(default)]
+    hosted_pid: u32,
+    #[serde(default)]
+    hosted_scene: Option<String>,
 }
 
 fn role(traits: &[String]) -> &'static str {
@@ -261,28 +271,55 @@ pub fn snapshot(dev: &Device) -> Result<Snapshot> {
     wait_for(&dir.join("front.json"), Duration::from_secs(2))?;
     let front: Front = serde_json::from_str(&std::fs::read_to_string(dir.join("front.json"))?)?;
     let mut app_not_answering = false;
-    let app = match (front.pid, &front.bundle) {
-        (p, Some(_)) if p > 0 => {
-            let pids = phone::processes(dev, |inner, _| inner == p)?;
-            match pids.first() {
-                Some(&linux) => {
-                    match dump(
-                        &dir,
-                        (linux, p),
-                        &format!("ax-{p}.json"),
-                        Duration::from_secs(3),
-                    ) {
-                        Ok(d) => Some(d),
-                        Err(_) => {
-                            app_not_answering = true;
-                            None
+    let mut modal_not_answering = false;
+    let modal = if front.hosted_pid > 0 {
+        let p = front.hosted_pid;
+        let pids = phone::processes(dev, |inner, _| inner == p)?;
+        match pids.first() {
+            Some(&linux) => match dump(
+                &dir,
+                (linux, p),
+                &format!("ax-{p}.json"),
+                Duration::from_secs(3),
+            ) {
+                Ok(d) => Some(d),
+                Err(_) => {
+                    modal_not_answering = true;
+                    None
+                }
+            },
+            None => None,
+        }
+    } else {
+        None
+    };
+
+    let app = if modal.is_some() || modal_not_answering {
+        None
+    } else {
+        match (front.pid, &front.bundle) {
+            (p, Some(_)) if p > 0 => {
+                let pids = phone::processes(dev, |inner, _| inner == p)?;
+                match pids.first() {
+                    Some(&linux) => {
+                        match dump(
+                            &dir,
+                            (linux, p),
+                            &format!("ax-{p}.json"),
+                            Duration::from_secs(3),
+                        ) {
+                            Ok(d) => Some(d),
+                            Err(_) => {
+                                app_not_answering = true;
+                                None
+                            }
                         }
                     }
+                    None => None,
                 }
-                None => None,
             }
+            _ => None,
         }
-        _ => None,
     };
 
     // web views: their content is in WebKit's WebContent processes, in points from the web view's content origin
@@ -291,8 +328,8 @@ pub fn snapshot(dev: &Device) -> Result<Snapshot> {
         _ => Vec::new(),
     };
 
-    // reading order: system alerts over everything, web content, the app, the home screen when no app is in front,
-    // the status bar
+    // reading order: system alerts over everything, hosted modal (when active), web content, the app,
+    // the home screen when no app is in front, the status bar
     let mut parts: Vec<(&str, &RawWindow)> = Vec::new();
     let sb_windows = |pred: &dyn Fn(&RawWindow) -> bool| -> Vec<(&str, &RawWindow)> {
         let mut v: Vec<_> = springboard
@@ -307,15 +344,21 @@ pub fn snapshot(dev: &Device) -> Result<Snapshot> {
     parts.extend(sb_windows(&|w| {
         w.level > 1000.0 && !w.class.contains("StatusBar")
     }));
-    parts.extend(web.iter().map(|w| ("WebContent", w)));
-    if let Some(a) = &app {
-        let mut v: Vec<_> = a.windows.iter().map(|w| (a.process.as_str(), w)).collect();
+    if let Some(m) = &modal {
+        let mut v: Vec<_> = m.windows.iter().map(|w| (m.process.as_str(), w)).collect();
         v.sort_by(|x, y| y.1.level.total_cmp(&x.1.level));
         parts.extend(v);
-    } else if !app_not_answering {
-        parts.extend(sb_windows(&|w| {
-            w.level <= 1000.0 && !w.class.contains("StatusBar")
-        }));
+    } else if !modal_not_answering {
+        parts.extend(web.iter().map(|w| ("WebContent", w)));
+        if let Some(a) = &app {
+            let mut v: Vec<_> = a.windows.iter().map(|w| (a.process.as_str(), w)).collect();
+            v.sort_by(|x, y| y.1.level.total_cmp(&x.1.level));
+            parts.extend(v);
+        } else if !app_not_answering {
+            parts.extend(sb_windows(&|w| {
+                w.level <= 1000.0 && !w.class.contains("StatusBar")
+            }));
+        }
     }
     parts.extend(sb_windows(&|w| w.class.contains("StatusBar")));
 
@@ -354,8 +397,16 @@ pub fn snapshot(dev: &Device) -> Result<Snapshot> {
             });
         }
     }
+    let modal_name = modal
+        .as_ref()
+        .map(|m| m.process.clone())
+        .or_else(|| modal_not_answering.then(|| front.hosted_scene.clone()).flatten());
     let snap = Snapshot {
-        app: front.bundle.filter(|_| app.is_some() || app_not_answering),
+        app: front
+            .bundle
+            .filter(|_| app.is_some() || app_not_answering || modal.is_some() || modal_not_answering),
+        modal: modal_name,
+        modal_not_answering,
         app_not_answering,
         elements,
     };
@@ -392,15 +443,24 @@ fn quote(s: &str) -> String {
 
 /// One line per element: `@e3 button "General"`, with its value, states and center point.
 pub fn format(s: &Snapshot) -> String {
-    let mut out = format!(
-        "{}\n",
-        match &s.app {
-            Some(a) if s.app_not_answering =>
-                format!("app {a} (not answering yet: starting or busy; snapshot again in a moment)"),
-            Some(a) => format!("app {a}"),
-            None => "home screen".to_string(),
-        }
-    );
+    let header = match &s.app {
+        Some(a) if s.modal_not_answering => format!(
+            "app {a} (modal {}not answering yet: starting or busy; snapshot again in a moment)",
+            s.modal
+                .as_deref()
+                .map(|m| format!("{m} "))
+                .unwrap_or_default()
+        ),
+        Some(a) => match &s.modal {
+            Some(m) => format!("app {a} (modal {m})"),
+            None if s.app_not_answering => format!(
+                "app {a} (not answering yet: starting or busy; snapshot again in a moment)"
+            ),
+            None => format!("app {a}"),
+        },
+        None => "home screen".to_string(),
+    };
+    let mut out = format!("{header}\n");
     for e in &s.elements {
         let (x, y) = e.center();
         out.push_str(&format!("@{} {}", e.reference, e.role));
@@ -494,6 +554,8 @@ mod tests {
         };
         let s = Snapshot {
             app: None,
+            modal: None,
+            modal_not_answering: false,
             app_not_answering: false,
             elements: vec![
                 el("e1", "heading", "Sign in"),
@@ -503,5 +565,25 @@ mod tests {
         };
         assert_eq!(find(&s, "sign in").unwrap().reference, "e2");
         assert_eq!(find(&s, "continue").unwrap().reference, "e3");
+    }
+
+    #[test]
+    fn format_includes_hosted_modal_state() {
+        let active = Snapshot {
+            app: Some("com.example.app".into()),
+            modal: Some("PhotosPicker".into()),
+            modal_not_answering: false,
+            app_not_answering: false,
+            elements: vec![],
+        };
+        assert_eq!(format(&active), "app com.example.app (modal PhotosPicker)\n");
+        let busy = Snapshot {
+            app: Some("com.example.app".into()),
+            modal: Some("PhotosPicker".into()),
+            modal_not_answering: true,
+            app_not_answering: false,
+            elements: vec![],
+        };
+        assert!(format(&busy).contains("modal PhotosPicker not answering yet"));
     }
 }
