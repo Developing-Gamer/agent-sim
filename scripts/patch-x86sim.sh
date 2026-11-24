@@ -69,7 +69,27 @@ if [ ! -d "$SRC/.git" ]; then
 	git -C "$SRC/external/dynarmic" submodule -q update --init --recursive --depth 1
 fi
 git -C "$SRC" checkout -q -- .
-for p in "$PATCHES"/*.patch; do git -C "$SRC" apply "$p"; done
+# Each patch is meant to land upstream. One that x86Sim's source already contains, or no longer matches because
+# upstream fixed the same code its own way, is skipped with a note, so setup keeps working on newer releases.
+applied=0
+for p in "$PATCHES"/*.patch; do
+	name=$(basename "$p")
+	if git -C "$SRC" apply --check "$p" 2>/dev/null; then
+		git -C "$SRC" apply "$p"
+		applied=$((applied + 1))
+	elif git -C "$SRC" apply --check --reverse "$p" 2>/dev/null; then
+		echo "patch-x86sim.sh: x86Sim $X86SIM_VERSION already includes $name; skipping it"
+	else
+		echo "patch-x86sim.sh: $name does not apply to x86Sim $X86SIM_VERSION (upstream changed that code," \
+			"likely fixing it there); skipping it. See patches/x86sim/README.md" >&2
+	fi
+done
+if [ "$applied" = 0 ]; then
+	echo "patch-x86sim.sh: x86Sim $X86SIM_VERSION needs none of agent-sim's fixes; using its own translator"
+	"$0" restore
+	mkdir -p "$BUILD" && cat "$PATCHES"/*.patch | sha256sum >"$BUILD/patches.sha"
+	exit 0
+fi
 [ -f "$BUILD/build.ninja" ] || cmake -S "$SRC/linux/arm64jit" -B "$BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Release \
 	-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ >/dev/null
 nice ninja -C "$BUILD" -j"$(nproc)" arm64jit >/dev/null
