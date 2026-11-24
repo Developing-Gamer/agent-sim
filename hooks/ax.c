@@ -256,7 +256,16 @@ static bool find_hosted_modal(long host_pid, long *out_pid, char *out_scene, siz
 	return found;
 }
 
+// The Lock Screen (Cover Sheet) is up: no app or hosted modal is in front, whatever the process states say.
+static bool is_ui_locked(void) {
+	Class cls = objc_getClass("SBLockScreenManager");
+	if (!cls || !responds((id)cls, "sharedInstanceIfExists")) return false;
+	id mgr = SEND(id, (id)cls, "sharedInstanceIfExists")((id)cls, SEL_("sharedInstanceIfExists"));
+	return mgr && getb(mgr, "isUILocked");
+}
+
 static void write_front(void) {
+	bool locked = is_ui_locked();
 	id ctl = SEND(id, (id)objc_getClass("SBApplicationController"), "sharedInstanceIfExists")(
 		(id)objc_getClass("SBApplicationController"), SEL_("sharedInstanceIfExists"));
 	id sb = SEND(id, (id)objc_getClass("UIApplication"), "sharedApplication")((id)objc_getClass("UIApplication"), SEL_("sharedApplication"));
@@ -264,7 +273,7 @@ static void write_front(void) {
 	id apps = get(ctl, "runningApplications");
 	const char *bundle = NULL;
 	long pid = 0;
-	if (!pick_front_app(front, &bundle, &pid)) {
+	if (!locked && !pick_front_app(front, &bundle, &pid)) {
 		for (unsigned long i = 0, n = count(apps); i < n; i++)
 			if (pick_front_app(at(apps, i), &bundle, &pid)) break;
 	}
@@ -277,7 +286,7 @@ static void write_front(void) {
 	if (bundle) putstr(bundle);
 	else puts_("null");
 	char num[128];
-	snprintf(num, sizeof num, ",\"pid\":%ld", pid);
+	snprintf(num, sizeof num, ",\"pid\":%ld,\"locked\":%s", pid, locked ? "true" : "false");
 	puts_(num);
 	if (hosted_pid > 0) {
 		snprintf(num, sizeof num, ",\"hosted_pid\":%ld,\"hosted_scene\":", hosted_pid);

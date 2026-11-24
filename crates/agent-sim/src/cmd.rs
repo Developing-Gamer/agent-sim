@@ -326,6 +326,13 @@ fn insert_text(dev: &Device, text: &str) -> Result<bool> {
     let dir = phone::data_dir(dev).join("tmp/agent-sim");
     let front: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(dir.join("front.json"))?)?;
+    if front
+        .get("locked")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        return Ok(false);
+    }
     let Some(pid) = front
         .get("hosted_pid")
         .and_then(|p| p.as_u64())

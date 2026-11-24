@@ -44,6 +44,9 @@ impl Element {
 pub struct Snapshot {
     /// the app in front (bundle id), or None on the home screen / lock screen
     pub app: Option<String>,
+    /// the device is on the Lock Screen (Cover Sheet UI locked): no app is in front
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub locked: bool,
     /// hosted modal UI presented over the app (for example ExtensionKit PhotosPicker), when active
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub modal: Option<String>,
@@ -83,6 +86,8 @@ struct RawElement {
 struct Front {
     bundle: Option<String>,
     pid: u32,
+    #[serde(default)]
+    locked: bool,
     #[serde(default)]
     hosted_pid: u32,
     #[serde(default)]
@@ -283,7 +288,8 @@ pub fn snapshot(dev: &Device) -> Result<Snapshot> {
     let front: Front = serde_json::from_str(&std::fs::read_to_string(dir.join("front.json"))?)?;
     let mut app_not_answering = false;
     let mut modal_not_answering = false;
-    let modal = if front.hosted_pid > 0 {
+    let locked = front.locked;
+    let modal = if front.hosted_pid > 0 && !locked {
         let p = front.hosted_pid;
         let pids = phone::processes(dev, |inner, _| inner == p)?;
         match pids.first() {
@@ -305,7 +311,7 @@ pub fn snapshot(dev: &Device) -> Result<Snapshot> {
         None
     };
 
-    let app = if modal.is_some() || modal_not_answering {
+    let app = if locked || modal.is_some() || modal_not_answering {
         None
     } else {
         match (front.pid, &front.bundle) {
@@ -339,8 +345,8 @@ pub fn snapshot(dev: &Device) -> Result<Snapshot> {
         _ => Vec::new(),
     };
 
-    // reading order: system alerts over everything, hosted modal (when active), web content, the app,
-    // the home screen when no app is in front, the status bar
+    // reading order: system alerts (and the Cover Sheet when locked) over everything, hosted modal (when active),
+    // web content, the app, the home screen when unlocked with no app in front, the status bar
     let mut parts: Vec<(&str, &RawWindow)> = Vec::new();
     let sb_windows = |pred: &dyn Fn(&RawWindow) -> bool| -> Vec<(&str, &RawWindow)> {
         let mut v: Vec<_> = springboard
@@ -355,7 +361,9 @@ pub fn snapshot(dev: &Device) -> Result<Snapshot> {
     parts.extend(sb_windows(&|w| {
         w.level > 1000.0 && !w.class.contains("StatusBar")
     }));
-    if let Some(m) = &modal {
+    if locked {
+        // the Cover Sheet and the status bar only: what is behind it cannot be reached
+    } else if let Some(m) = &modal {
         let mut v: Vec<_> = m.windows.iter().map(|w| (m.process.as_str(), w)).collect();
         v.sort_by(|x, y| y.1.level.total_cmp(&x.1.level));
         parts.extend(v);
@@ -416,6 +424,7 @@ pub fn snapshot(dev: &Device) -> Result<Snapshot> {
         app: front
             .bundle
             .filter(|_| app.is_some() || app_not_answering || modal.is_some() || modal_not_answering),
+        locked,
         modal: modal_name,
         modal_not_answering,
         app_not_answering,
@@ -454,22 +463,26 @@ fn quote(s: &str) -> String {
 
 /// One line per element: `@e3 button "General"`, with its value, states and center point.
 pub fn format(s: &Snapshot) -> String {
-    let header = match &s.app {
-        Some(a) if s.modal_not_answering => format!(
-            "app {a} (modal {}not answering yet: starting or busy; snapshot again in a moment)",
-            s.modal
-                .as_deref()
-                .map(|m| format!("{m} "))
-                .unwrap_or_default()
-        ),
-        Some(a) => match &s.modal {
-            Some(m) => format!("app {a} (modal {m})"),
-            None if s.app_not_answering => format!(
-                "app {a} (not answering yet: starting or busy; snapshot again in a moment)"
+    let header = if s.locked {
+        "lock screen".to_string()
+    } else {
+        match &s.app {
+            Some(a) if s.modal_not_answering => format!(
+                "app {a} (modal {}not answering yet: starting or busy; snapshot again in a moment)",
+                s.modal
+                    .as_deref()
+                    .map(|m| format!("{m} "))
+                    .unwrap_or_default()
             ),
-            None => format!("app {a}"),
-        },
-        None => "home screen".to_string(),
+            Some(a) => match &s.modal {
+                Some(m) => format!("app {a} (modal {m})"),
+                None if s.app_not_answering => format!(
+                    "app {a} (not answering yet: starting or busy; snapshot again in a moment)"
+                ),
+                None => format!("app {a}"),
+            },
+            None => "home screen".to_string(),
+        }
     };
     let mut out = format!("{header}\n");
     for e in &s.elements {
@@ -565,6 +578,7 @@ mod tests {
         };
         let s = Snapshot {
             app: None,
+            locked: false,
             modal: None,
             modal_not_answering: false,
             app_not_answering: false,
@@ -582,6 +596,7 @@ mod tests {
     fn format_includes_hosted_modal_state() {
         let active = Snapshot {
             app: Some("com.example.app".into()),
+            locked: false,
             modal: Some("PhotosPicker".into()),
             modal_not_answering: false,
             app_not_answering: false,
@@ -590,11 +605,27 @@ mod tests {
         assert_eq!(format(&active), "app com.example.app (modal PhotosPicker)\n");
         let busy = Snapshot {
             app: Some("com.example.app".into()),
+            locked: false,
             modal: Some("PhotosPicker".into()),
             modal_not_answering: true,
             app_not_answering: false,
             elements: vec![],
         };
         assert!(format(&busy).contains("modal PhotosPicker not answering yet"));
+    }
+
+    #[test]
+    fn format_distinguishes_lock_screen_from_home_screen() {
+        let mut s = Snapshot {
+            app: None,
+            locked: true,
+            modal: None,
+            modal_not_answering: false,
+            app_not_answering: false,
+            elements: vec![],
+        };
+        assert_eq!(format(&s), "lock screen\n");
+        s.locked = false;
+        assert_eq!(format(&s), "home screen\n");
     }
 }
