@@ -52,11 +52,82 @@ pub fn status() -> Result<()> {
     Ok(())
 }
 
+/// Valid device orientations accepted by `x86sim orientation` / `simhid`.
+pub const ORIENTATIONS: &[&str] = &[
+    "portrait",
+    "portraitUpsideDown",
+    "landscapeLeft",
+    "landscapeRight",
+    "faceUp",
+    "faceDown",
+];
+
 /// How the phone is turned (x86Sim's orientation): portrait, landscapeLeft, landscapeRight, portraitUpsideDown.
-fn orientation(dev: &Device) -> String {
+fn current_orientation(dev: &Device) -> String {
     phone::x86sim_ok(dev, &["orientation"])
         .map(|o| o.trim().to_string())
         .unwrap_or_else(|_| "portrait".into())
+}
+
+/// Gets or sets the phone's orientation (`portrait`, `portraitUpsideDown`, `landscapeLeft`,
+/// `landscapeRight`, `faceUp`, `faceDown`).
+pub fn set_orientation(dev: &Device, name: Option<&str>) -> Result<String> {
+    let out = match name {
+        Some(n) => {
+            if !ORIENTATIONS.contains(&n) {
+                bail!(
+                    "unknown orientation {n:?} (expected one of: {})",
+                    ORIENTATIONS.join(", ")
+                );
+            }
+            phone::x86sim_ok(dev, &["orientation", n])?
+        }
+        None => phone::x86sim_ok(dev, &["orientation"])?,
+    };
+    Ok(out.trim().to_string())
+}
+
+/// Turns the phone 90 degrees left (counterclockwise) or right (clockwise) and returns the new orientation.
+pub fn rotate_device(dev: &Device, direction: &str) -> Result<String> {
+    if !matches!(direction, "left" | "right") {
+        bail!("rotate direction must be left or right (got {direction:?})");
+    }
+    phone::x86sim_ok(dev, &["rotate", direction])?;
+    let now = phone::x86sim_ok(dev, &["orientation"])
+        .map(|o| o.trim().to_string())
+        .unwrap_or_default();
+    if now.is_empty() {
+        Ok(format!("rotated {direction}"))
+    } else {
+        Ok(format!("rotated {direction} ({now})"))
+    }
+}
+
+/// Maps upright screen points `(x, y)` into physical panel normalized `(0..1, 0..1)` coordinates
+/// matching `rotate()` and `x86sim`'s `unrotate()`.
+fn upright_to_panel(scr: Screen, x: f64, y: f64, orientation: &str) -> (f64, f64) {
+    match orientation {
+        "landscapeLeft" => {
+            let (u, v) = (x / scr.height, y / scr.width);
+            (1.0 - v, u)
+        }
+        "landscapeRight" => {
+            let (u, v) = (x / scr.height, y / scr.width);
+            (v, 1.0 - u)
+        }
+        "portraitUpsideDown" => {
+            let (u, v) = (x / scr.width, y / scr.height);
+            (1.0 - u, 1.0 - v)
+        }
+        _ => scr.unit(x, y),
+    }
+}
+
+fn upright_bounds(scr: Screen, orientation: &str) -> (f64, f64) {
+    match orientation {
+        "landscapeLeft" | "landscapeRight" => (scr.height, scr.width),
+        _ => (scr.width, scr.height),
+    }
 }
 
 /// The screen as a PNG, upright as the user sees it: turned with the phone, as Apple's Simulator turns its window.
@@ -70,7 +141,7 @@ pub fn screenshot_png(dev: &Device) -> Result<Vec<u8>> {
     for px in frame.bgra.chunks_exact(4) {
         rgb.extend_from_slice(&[px[2], px[1], px[0]]);
     }
-    let (rgb, w, h) = rotate(rgb, w, h, &orientation(dev));
+    let (rgb, w, h) = rotate(rgb, w, h, &current_orientation(dev));
     let mut png_bytes = Vec::new();
     let mut enc = png::Encoder::new(&mut png_bytes, w as u32, h as u32);
     enc.set_color(png::ColorType::Rgb);
@@ -208,6 +279,65 @@ pub fn swipe(dev: &Device, from: (f64, f64), to: (f64, f64), ms: u64) -> Result<
     Ok(format!(
         "swiped ({:.0},{:.0}) to ({:.0},{:.0})",
         from.0, from.1, to.0, to.1
+    ))
+}
+
+fn validate_pinch(
+    cx: f64,
+    cy: f64,
+    r1: f64,
+    r2: f64,
+    bounds: (f64, f64),
+) -> Result<()> {
+    if ![cx, cy, r1, r2].iter().all(|v| v.is_finite()) {
+        bail!("pinch coordinates and radii must be finite numbers");
+    }
+    if r1 < 0.0 || r2 < 0.0 {
+        bail!("pinch radii must be non-negative (got r1={r1}, r2={r2})");
+    }
+    let (w, h) = bounds;
+    let rmax = r1.max(r2);
+    if cy < 0.0 || cy > h || cx - rmax < 0.0 || cx + rmax > w {
+        bail!(
+            "pinch endpoints ({:.0}±{:.0}, {:.0}) exceed screen bounds ({:.0}x{:.0})",
+            cx,
+            rmax,
+            cy,
+            w,
+            h
+        );
+    }
+    Ok(())
+}
+
+/// Two-finger pinch centered at `(cx, cy)` in upright screen points: finger half-spacing moves from `r1` to `r2`
+/// (`r2 > r1` zooms in, `r2 < r1` zooms out).
+pub fn pinch(dev: &Device, cx: f64, cy: f64, r1: f64, r2: f64, ms: u64) -> Result<String> {
+    let scr = Screen::of(dev)?;
+    let orient = current_orientation(dev);
+    validate_pinch(cx, cy, r1, r2, upright_bounds(scr, &orient))?;
+    let mut h = hid(dev);
+    let steps = (ms / 16).clamp(4, 120);
+    let fingers = |r: f64| {
+        (
+            upright_to_panel(scr, cx - r, cy, &orient),
+            upright_to_panel(scr, cx + r, cy, &orient),
+        )
+    };
+    let (p1, p2) = fingers(r1);
+    h.touch2("down", p1, p2)?;
+    for i in 1..=steps {
+        let t = i as f64 / steps as f64;
+        let r = r1 + (r2 - r1) * t;
+        let (p1, p2) = fingers(r);
+        std::thread::sleep(Duration::from_millis(ms / steps));
+        h.touch2("move", p1, p2)?;
+    }
+    std::thread::sleep(Duration::from_millis(50));
+    let (p1, p2) = fingers(r2);
+    h.touch2("up", p1, p2)?;
+    Ok(format!(
+        "pinched at ({cx:.0},{cy:.0}) radius {r1:.0} to {r2:.0}"
     ))
 }
 
@@ -822,7 +952,7 @@ pub fn record(dev: &Device, out: &Path, secs: f64, fps: u32) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{TypeStep, launch_args, rotate, type_steps};
+    use super::{TypeStep, launch_args, rotate, type_steps, upright_bounds, upright_to_panel, validate_pinch};
 
     #[test]
     fn launch_args_forwards_logs_env_and_app_args() {
@@ -874,6 +1004,35 @@ mod tests {
             ]
         );
         assert_eq!(type_steps(""), Vec::<TypeStep>::new());
+    }
+
+    use crate::phone::Screen;
+
+    #[test]
+    fn upright_to_panel_matches_orientation_turns() {
+        let scr = Screen {
+            width: 400.0,
+            height: 800.0,
+        };
+        let approx = |(ax, ay): (f64, f64), (bx, by): (f64, f64)| {
+            assert!((ax - bx).abs() < 1e-6 && (ay - by).abs() < 1e-6, "({ax},{ay}) != ({bx},{by})");
+        };
+        approx(upright_to_panel(scr, 100.0, 200.0, "portrait"), (0.25, 0.25));
+        // landscapeLeft: upright (800x400), top-left (0,0) maps to panel (1,0)
+        assert_eq!(upright_bounds(scr, "landscapeLeft"), (800.0, 400.0));
+        approx(upright_to_panel(scr, 200.0, 100.0, "landscapeLeft"), (0.75, 0.25));
+        // landscapeRight: upright (800x400), top-left (0,0) maps to panel (0,1)
+        approx(upright_to_panel(scr, 200.0, 100.0, "landscapeRight"), (0.25, 0.75));
+        approx(upright_to_panel(scr, 100.0, 200.0, "portraitUpsideDown"), (0.75, 0.75));
+    }
+
+    #[test]
+    fn pinch_validation_checks_bounds_and_radii() {
+        assert!(validate_pinch(200.0, 400.0, 40.0, 140.0, (400.0, 800.0)).is_ok());
+        assert!(validate_pinch(200.0, 400.0, 140.0, 40.0, (400.0, 800.0)).is_ok());
+        assert!(validate_pinch(200.0, 400.0, -10.0, 40.0, (400.0, 800.0)).is_err());
+        assert!(validate_pinch(50.0, 400.0, 20.0, 80.0, (400.0, 800.0)).is_err());
+        assert!(validate_pinch(200.0, 900.0, 20.0, 80.0, (400.0, 800.0)).is_err());
     }
 
     // a 2x1 image (red, green) turned each way
