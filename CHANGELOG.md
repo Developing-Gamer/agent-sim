@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- `location set|clear`, `addmedia`, `privacy grant|revoke|reset` and `push`, in the CLI and the MCP server.
+- `scroll` slows into its end point and holds before lifting, so the list stops where `scroll` returns and the next
+  tap lands (it kept coasting in 5 of 6 tries before, 0 of 6 now).
+- x86Sim fix 0003: long-running phones no longer leak a 4-12 KB reserved mapping per allocation in the Metal
+  processes (backboardd grew by 625 such mappings over three rounds of use before, 61 now).
+- `patch-x86sim.sh` skips a fix that the x86Sim release already contains or has fixed its own way, so a new x86Sim
+  release does not stop setup.
+- `launch --env KEY=VALUE -- ARGS`, Return as a real key press in `type`, sign-in sheets in `snapshot`, and setup on
+  Arch and Fedora.
 - New setups use x86Sim 0.5.3 (Arch and other distributions with libxml2 2.14 or later, correct thread CPU time).
   A machine set up on an older release keeps using it until `agent-sim setup` runs again, which upgrades it.
 - `install` thins universal (x86_64 + arm64) simulator builds to arm64, so Flutter's and Xcode's default simulator
