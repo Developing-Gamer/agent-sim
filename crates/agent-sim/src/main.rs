@@ -150,6 +150,31 @@ enum Command {
         #[arg(long, conflicts_with_all = ["time", "battery", "charging"])]
         clear: bool,
     },
+    /// Simulate the phone's GPS location (`location set LAT,LON` or `location clear`).
+    Location {
+        #[command(subcommand)]
+        action: LocationAction,
+    },
+    /// Add photos or videos to the Photos library (as `simctl addmedia`).
+    Addmedia {
+        #[arg(required = true)]
+        paths: Vec<PathBuf>,
+    },
+    /// Grant, revoke or reset app permissions without a prompt (as `simctl privacy`).
+    Privacy {
+        #[arg(value_parser = ["grant", "revoke", "reset"])]
+        action: String,
+        /// Service: all, location, location-always, calendar, contacts, contacts-limited, photos,
+        /// photos-add, media-library, microphone, motion, reminders, siri, camera, homekit.
+        service: String,
+        /// App bundle id (required for grant/revoke, and for reset location/location-always).
+        bundle_id: Option<String>,
+    },
+    /// Send a simulated push notification (`push [BUNDLE_ID] PAYLOAD.json|-`).
+    Push {
+        #[arg(required = true, num_args = 1..=2)]
+        args: Vec<String>,
+    },
     /// Record the screen to an MP4.
     Record {
         #[arg(short, long, default_value = "recording.mp4")]
@@ -212,6 +237,17 @@ enum Command {
     },
 }
 
+#[derive(Subcommand)]
+enum LocationAction {
+    /// Fix the simulated location to LAT,LON (e.g. `51.5074,-0.1278`).
+    Set {
+        #[arg(allow_hyphen_values = true)]
+        coords: String,
+    },
+    /// Stop simulating a location.
+    Clear,
+}
+
 fn random_token() -> Result<String> {
     let mut b = [0u8; 16];
     std::fs::File::open("/dev/urandom")
@@ -264,6 +300,20 @@ fn main() -> Result<()> {
             charging,
             clear,
         )),
+        Command::Location { action } => match action {
+            LocationAction::Set { coords } => {
+                let (lat, lon) = cmd::parse_lat_lon(&coords)?;
+                say(cmd::location_set(&dev()?, lat, lon))
+            }
+            LocationAction::Clear => say(cmd::location_clear(&dev()?)),
+        },
+        Command::Addmedia { paths } => say(cmd::addmedia(&dev()?, &paths)),
+        Command::Privacy {
+            action,
+            service,
+            bundle_id,
+        } => say(cmd::privacy(&dev()?, &action, &service, bundle_id.as_deref())),
+        Command::Push { args } => say(cmd::push_cli(&dev()?, &args)),
         Command::Clipboard { text } => say(cmd::clipboard(&dev()?, text.as_deref())),
         Command::Record { out, secs, fps } => say(cmd::record(
             &dev()?,

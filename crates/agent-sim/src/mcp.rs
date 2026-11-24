@@ -111,6 +111,41 @@ fn tools() -> Value {
             &["text"]
         ),
         tool(
+            "location",
+            "Simulate the phone's GPS location (action=\"set\" with latitude and longitude) or stop simulating (action=\"clear\").",
+            json!({
+                "action": {"type": "string", "enum": ["set", "clear"]},
+                "latitude": {"type": "number", "description": "Latitude in degrees (-90..90), required for action=set"},
+                "longitude": {"type": "number", "description": "Longitude in degrees (-180..180), required for action=set"}
+            }),
+            &["action"]
+        ),
+        tool(
+            "addmedia",
+            "Add photos or videos from host file paths to the phone's Photos library.",
+            json!({"paths": {"type": "array", "items": {"type": "string"}, "description": "Image or video file paths on this machine"}}),
+            &["paths"]
+        ),
+        tool(
+            "privacy",
+            "Grant, revoke or reset an app's privacy permission without a prompt (as simctl privacy).",
+            json!({
+                "action": {"type": "string", "enum": ["grant", "revoke", "reset"]},
+                "service": {"type": "string", "enum": cmd::PRIVACY_SERVICES},
+                "bundle_id": {"type": "string", "description": "Target app bundle id (required for grant, revoke, and reset of location/location-always)"}
+            }),
+            &["action", "service"]
+        ),
+        tool(
+            "push",
+            "Send a simulated remote push notification to an app.",
+            json!({
+                "bundle_id": {"type": "string", "description": "Target app bundle id (optional if \"Simulator Target Bundle\" is set in payload)"},
+                "payload": {"type": "object", "description": "APNs JSON payload containing an \"aps\" object"}
+            }),
+            &["payload"]
+        ),
+        tool(
             "boot",
             "Boot the phone and wait for its home screen (about 15-40 s). Phones usually run already.",
             json!({}),
@@ -270,6 +305,47 @@ fn call(default_device: &str, name: &str, args: &Value) -> Result<Value> {
                 args.get("gone").and_then(Value::as_bool).unwrap_or(false),
             )?)
         }
+        "location" => match s(args, "action")? {
+            "set" => text(cmd::location_set(
+                &dev,
+                f(args, "latitude")?,
+                f(args, "longitude")?,
+            )?),
+            "clear" => text(cmd::location_clear(&dev)?),
+            other => bail!("location action must be set or clear (got {other:?})"),
+        },
+        "addmedia" => {
+            let paths: Vec<PathBuf> = args
+                .get("paths")
+                .and_then(Value::as_array)
+                .context("missing array paths")?
+                .iter()
+                .map(|v| {
+                    v.as_str()
+                        .map(PathBuf::from)
+                        .context("paths entries must be strings")
+                })
+                .collect::<Result<_>>()?;
+            text(cmd::addmedia(&dev, &paths)?)
+        }
+        "privacy" => text(cmd::privacy(
+            &dev,
+            s(args, "action")?,
+            s(args, "service")?,
+            args.get("bundle_id").and_then(Value::as_str),
+        )?),
+        "push" => {
+            let payload_val = args.get("payload").context("missing argument payload")?;
+            let bytes = match payload_val {
+                Value::String(s) => s.as_bytes().to_vec(),
+                other => serde_json::to_vec(other)?,
+            };
+            text(cmd::push_json(
+                &dev,
+                args.get("bundle_id").and_then(Value::as_str),
+                &bytes,
+            )?)
+        }
         _ => bail!("unknown tool {name}"),
     }
 }
@@ -356,9 +432,15 @@ mod tests {
 
     #[test]
     fn every_tool_has_a_schema() {
-        for t in tools().as_array().unwrap() {
+        let list = tools();
+        let arr = list.as_array().unwrap();
+        for t in arr {
             assert!(t["name"].is_string());
             assert_eq!(t["inputSchema"]["type"], "object");
+        }
+        let names: Vec<&str> = arr.iter().filter_map(|t| t["name"].as_str()).collect();
+        for want in ["location", "addmedia", "privacy", "push"] {
+            assert!(names.contains(&want), "missing MCP tool {want}");
         }
     }
 }
