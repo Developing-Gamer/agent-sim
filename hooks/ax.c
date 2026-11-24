@@ -24,6 +24,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <time.h>
+#include <dirent.h>
 #include <sys/stat.h>
 
 typedef struct { double x, y, w, h; } Rect;
@@ -193,37 +194,98 @@ static void write_file(const char *name, const char *data, size_t n) {
 // (the keyboard's InputUI) are not the app. Skip suspended processes (FBProcessTaskStateSuspended == 3): dismissed
 // remote view services such as SafariViewService can stay marked isForeground while suspended and would otherwise
 // shadow the host app.
-static bool is_ui_locked(void) {
-	Class cls = objc_getClass("SBLockScreenManager");
-	if (!cls || !responds((id)cls, "sharedInstanceIfExists")) return false;
-	id mgr = SEND(id, (id)cls, "sharedInstanceIfExists")((id)cls, SEL_("sharedInstanceIfExists"));
-	return mgr && getb(mgr, "isUILocked");
-}
-
-static bool pick_front_app(id app, char *out, size_t outsz) {
+static bool pick_front_app(id app, const char **bundle_out, long *pid_out) {
 	id st = app ? get(app, "processState") : nil;
 	const char *b = app ? utf8(get(app, "bundleIdentifier")) : NULL;
 	if (!st || !getb(st, "isForeground") || getl(st, "taskState") == 3 || !b || strstr(b, "InputUI")) return false;
-	snprintf(out, outsz, "{\"bundle\":\"%s\",\"pid\":%ld,\"locked\":false}\n", b, getl(st, "pid"));
+	*bundle_out = b;
+	*pid_out = getl(st, "pid");
 	return true;
 }
 
-static void write_front(void) {
-	bool locked = is_ui_locked();
-	char out[512];
-	snprintf(out, sizeof out, "{\"bundle\":null,\"pid\":0,\"locked\":%s}\n", locked ? "true" : "false");
-	if (!locked) {
-		id ctl = SEND(id, (id)objc_getClass("SBApplicationController"), "sharedInstanceIfExists")(
-			(id)objc_getClass("SBApplicationController"), SEL_("sharedInstanceIfExists"));
-		id sb = SEND(id, (id)objc_getClass("UIApplication"), "sharedApplication")((id)objc_getClass("UIApplication"), SEL_("sharedApplication"));
-		id front = get(sb, "_accessibilityFrontMostApplication");
-		id apps = get(ctl, "runningApplications");
-		if (!pick_front_app(front, out, sizeof out)) {
-			for (unsigned long i = 0, n = count(apps); i < n; i++)
-				if (pick_front_app(at(apps, i), out, sizeof out)) break;
+// Find a running-active hosted ExtensionKit modal (such as PhotosPicker.appex) whose RunningBoard
+// frontboard.visibility endowment is attached to `host_pid`'s UISceneHosting environment.
+static bool find_hosted_modal(long host_pid, long *out_pid, char *out_scene, size_t scenesz) {
+	if (host_pid <= 0) return false;
+	Class idc = objc_getClass("RBSProcessIdentifier"), hc = objc_getClass("RBSProcessHandle");
+	if (!idc || !hc || !responds((id)idc, "identifierWithPid:") || !responds((id)hc, "handleForIdentifier:error:"))
+		return false;
+	DIR *d = opendir(dir);
+	if (!d) return false;
+	char pfx_paren[48], pfx_slash[48];
+	snprintf(pfx_paren, sizeof pfx_paren, "UIScene:%ld(", host_pid);
+	snprintf(pfx_slash, sizeof pfx_slash, "UIScene:%ld/", host_pid);
+	size_t lp = strlen(pfx_paren), ls = strlen(pfx_slash);
+	long self_pid = (long)getpid();
+	bool found = false;
+	struct dirent *ent;
+	while (!found && (ent = readdir(d)) != NULL) {
+		if (strncmp(ent->d_name, "hooked-", 7) != 0) continue;
+		long pid = atol(ent->d_name + 7);
+		if (pid <= 0 || pid == host_pid || pid == self_pid) continue;
+		id ident = SEND(id, (id)idc, "identifierWithPid:", int)((id)idc, SEL_("identifierWithPid:"), (int)pid);
+		if (!ident) continue;
+		id err = nil;
+		id h = SEND(id, (id)hc, "handleForIdentifier:error:", id, id *)((id)hc, SEL_("handleForIdentifier:error:"), ident, &err);
+		if (!h) continue;
+		const char *pname = utf8(get(h, "name"));
+		if (pname && strstr(pname, "InputUI")) continue;
+		id st = get(h, "currentState");
+		if (!st || !responds(st, "taskState")) continue;
+		unsigned char task = SEND(unsigned char, st, "taskState")(st, SEL_("taskState"));
+		if (task != 4) continue;  // RBSTaskStateRunningActive
+		id infos = get(st, "endowmentInfos");
+		if (infos && !responds(infos, "objectAtIndex:") && responds(infos, "allObjects"))
+			infos = get(infos, "allObjects");
+		for (unsigned long i = 0, n = count(infos); i < n; i++) {
+			id info = at(infos, i);
+			const char *ns = utf8(get(info, "endowmentNamespace"));
+			const char *env = utf8(get(info, "environment"));
+			if (!ns || !env || strcmp(ns, "com.apple.frontboard.visibility") != 0) continue;
+			if (strncmp(env, pfx_paren, lp) != 0 && strncmp(env, pfx_slash, ls) != 0) continue;
+			if (!strstr(env, "UISceneHosting") || strstr(env, "InputUI")) continue;
+			const char *sc = strstr(env, "->/");
+			sc = sc ? sc + 3 : env;
+			*out_pid = pid;
+			snprintf(out_scene, scenesz, "%s", sc);
+			found = true;
+			break;
 		}
 	}
-	write_file("front.json", out, strlen(out));
+	closedir(d);
+	return found;
+}
+
+static void write_front(void) {
+	id ctl = SEND(id, (id)objc_getClass("SBApplicationController"), "sharedInstanceIfExists")(
+		(id)objc_getClass("SBApplicationController"), SEL_("sharedInstanceIfExists"));
+	id sb = SEND(id, (id)objc_getClass("UIApplication"), "sharedApplication")((id)objc_getClass("UIApplication"), SEL_("sharedApplication"));
+	id front = get(sb, "_accessibilityFrontMostApplication");
+	id apps = get(ctl, "runningApplications");
+	const char *bundle = NULL;
+	long pid = 0;
+	if (!pick_front_app(front, &bundle, &pid)) {
+		for (unsigned long i = 0, n = count(apps); i < n; i++)
+			if (pick_front_app(at(apps, i), &bundle, &pid)) break;
+	}
+	long hosted_pid = 0;
+	char hosted_scene[256] = {0};
+	if (pid > 0)
+		find_hosted_modal(pid, &hosted_pid, hosted_scene, sizeof hosted_scene);
+	len = 0;
+	puts_("{\"bundle\":");
+	if (bundle) putstr(bundle);
+	else puts_("null");
+	char num[128];
+	snprintf(num, sizeof num, ",\"pid\":%ld", pid);
+	puts_(num);
+	if (hosted_pid > 0) {
+		snprintf(num, sizeof num, ",\"hosted_pid\":%ld,\"hosted_scene\":", hosted_pid);
+		puts_(num);
+		putstr(hosted_scene);
+	}
+	puts_("}\n");
+	write_file("front.json", buf, len);
 }
 
 // SpringBoard: requests agent-sim leaves in cmd.txt before the signal; the answer goes to answer.txt.
