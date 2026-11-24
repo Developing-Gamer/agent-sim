@@ -32,7 +32,15 @@ set -Eeuo pipefail
 ACTION=${1:?usage: phone.sh start|wait|stop|status [DEVICE]}
 DEVICE=${2:-${DEVICE:-p}}
 ROOT=${AGENT_SIM_HOME:-$HOME/.local/share/agent-sim}
-X86SIM_VERSION=${X86SIM_VERSION:-0.5.3}
+if [ -z "${X86SIM_VERSION:-}" ]; then
+	# the default release, else the newest one installed (a machine set up before the default moved keeps working
+	# until setup runs again)
+	X86SIM_VERSION=0.5.3
+	if [ ! -x "$ROOT/x86sim-$X86SIM_VERSION/AppRun" ]; then
+		newest=$(find "$ROOT" -maxdepth 2 -path "$ROOT/x86sim-*/AppRun" 2>/dev/null | sed 's|.*/x86sim-||; s|/AppRun$||' | sort -V | tail -1)
+		[ -n "$newest" ] && X86SIM_VERSION=$newest
+	fi
+fi
 X=$ROOT/x86sim-$X86SIM_VERSION/AppRun
 DATA=${XDG_DATA_HOME:-$HOME/.local/share}/x86sim
 DIR=$DATA/var/device-a64-$DEVICE

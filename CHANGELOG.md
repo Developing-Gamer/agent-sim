@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- New setups use x86Sim 0.5.3 (Arch and other distributions with libxml2 2.14 or later, correct thread CPU time).
+  A machine set up on an older release keeps using it until `agent-sim setup` runs again, which upgrades it.
+- `install` thins universal (x86_64 + arm64) simulator builds to arm64, so Flutter's and Xcode's default simulator
+  builds launch.
+- `phone.sh` leaves `VK_ICD_FILENAMES` unset when lavapipe is not installed, so desktops use their GPU's driver.
 - Web pages no longer stay blank, and `open` brings Safari up after it was quit: reading the screen sent SIGUSR2 to
   processes still starting, which ended them; now only processes whose hook is ready are asked.
 - `open` checks that Safari started for a web link and asks again once if it did not.

@@ -142,17 +142,55 @@ pub fn home() -> Result<PathBuf> {
     Ok(PathBuf::from(h).join(".local/share/agent-sim"))
 }
 
-/// x86Sim's launcher (the unpacked AppImage's AppRun).
+/// The x86Sim release new setups install.
+const X86SIM_DEFAULT: &str = "0.5.3";
+
+/// x86Sim's launcher (the unpacked AppImage's AppRun): `$X86SIM_VERSION`'s, else the default release's, else the
+/// newest release installed. A machine set up before the default moved keeps working on what it has until
+/// `agent-sim setup` runs again.
 pub fn x86sim() -> Result<PathBuf> {
-    let ver = std::env::var("X86SIM_VERSION").unwrap_or_else(|_| "0.5.3".into());
-    let p = home()?.join(format!("x86sim-{ver}/AppRun"));
-    if !p.is_file() {
-        bail!(
-            "x86Sim is not installed at {} (run scripts/setup-vm.sh)",
-            p.display()
-        );
+    let home = home()?;
+    let app = |ver: &str| home.join(format!("x86sim-{ver}/AppRun"));
+    if let Ok(ver) = std::env::var("X86SIM_VERSION") {
+        let p = app(&ver);
+        if !p.is_file() {
+            bail!(
+                "x86Sim {ver} is not installed at {} (run agent-sim setup)",
+                p.display()
+            );
+        }
+        return Ok(p);
     }
-    Ok(p)
+    let p = app(X86SIM_DEFAULT);
+    if p.is_file() {
+        return Ok(p);
+    }
+    let parse = |v: &str| {
+        v.split('.')
+            .map(|n| n.parse::<u32>().ok())
+            .collect::<Option<Vec<_>>>()
+    };
+    let newest = std::fs::read_dir(&home)
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().into_string().ok()?;
+            let ver = parse(name.strip_prefix("x86sim-")?)?;
+            e.path()
+                .join("AppRun")
+                .is_file()
+                .then_some((ver, e.path().join("AppRun")))
+        })
+        .max_by(|a, b| a.0.cmp(&b.0));
+    match newest {
+        Some((_, p)) => Ok(p),
+        None => bail!(
+            "x86Sim is not installed in {} (run agent-sim setup)",
+            home.display()
+        ),
+    }
 }
 
 /// Runs `x86sim ARGS...` against this phone.
