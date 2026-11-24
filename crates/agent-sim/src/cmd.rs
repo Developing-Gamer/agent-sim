@@ -293,12 +293,41 @@ pub fn press(dev: &Device, button: &str) -> Result<String> {
     Ok(format!("pressed {button}"))
 }
 
-pub fn launch(dev: &Device, bundle: &str, logs: bool) -> Result<String> {
-    let args: Vec<&str> = if logs {
-        vec!["launch", "--oslog", "--terminate-running-process", bundle]
-    } else {
-        vec!["launch", bundle]
-    };
+fn launch_args(
+    bundle: &str,
+    logs: bool,
+    env: &[String],
+    app_args: &[String],
+) -> Result<Vec<String>> {
+    let mut out = vec!["launch".to_string()];
+    if logs {
+        out.push("--oslog".into());
+        out.push("--terminate-running-process".into());
+    }
+    for entry in env {
+        let Some((key, _)) = entry.split_once('=') else {
+            bail!("--env expects KEY=VALUE, got {entry:?}");
+        };
+        if key.is_empty() {
+            bail!("--env expects a non-empty key, got {entry:?}");
+        }
+        out.push("--env".into());
+        out.push(entry.clone());
+    }
+    out.push(bundle.to_string());
+    out.extend(app_args.iter().cloned());
+    Ok(out)
+}
+
+pub fn launch(
+    dev: &Device,
+    bundle: &str,
+    logs: bool,
+    env: &[String],
+    app_args: &[String],
+) -> Result<String> {
+    let owned = launch_args(bundle, logs, env, app_args)?;
+    let args: Vec<&str> = owned.iter().map(String::as_str).collect();
     // an app started right after it was stopped sometimes dies during startup: start it again once
     for attempt in 0..2 {
         let out = phone::x86sim_ok(dev, &args).map_err(|e| {
@@ -741,7 +770,39 @@ pub fn record(dev: &Device, out: &Path, secs: f64, fps: u32) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::rotate;
+    use super::{launch_args, rotate};
+
+    #[test]
+    fn launch_args_forwards_logs_env_and_app_args() {
+        let args = launch_args(
+            "com.example.app",
+            true,
+            &["A=1".into(), "B=two=2".into()],
+            &["-flag".into(), "YES".into()],
+        )
+        .unwrap();
+        assert_eq!(
+            args,
+            vec![
+                "launch",
+                "--oslog",
+                "--terminate-running-process",
+                "--env",
+                "A=1",
+                "--env",
+                "B=two=2",
+                "com.example.app",
+                "-flag",
+                "YES",
+            ]
+        );
+    }
+
+    #[test]
+    fn launch_args_rejects_malformed_env() {
+        assert!(launch_args("com.example.app", false, &["NOEQUALS".into()], &[]).is_err());
+        assert!(launch_args("com.example.app", false, &["=val".into()], &[]).is_err());
+    }
 
     // a 2x1 image (red, green) turned each way
     #[test]
