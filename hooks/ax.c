@@ -193,25 +193,35 @@ static void write_file(const char *name, const char *data, size_t n) {
 // (the keyboard's InputUI) are not the app. Skip suspended processes (FBProcessTaskStateSuspended == 3): dismissed
 // remote view services such as SafariViewService can stay marked isForeground while suspended and would otherwise
 // shadow the host app.
+static bool is_ui_locked(void) {
+	Class cls = objc_getClass("SBLockScreenManager");
+	if (!cls || !responds((id)cls, "sharedInstanceIfExists")) return false;
+	id mgr = SEND(id, (id)cls, "sharedInstanceIfExists")((id)cls, SEL_("sharedInstanceIfExists"));
+	return mgr && getb(mgr, "isUILocked");
+}
+
 static bool pick_front_app(id app, char *out, size_t outsz) {
 	id st = app ? get(app, "processState") : nil;
 	const char *b = app ? utf8(get(app, "bundleIdentifier")) : NULL;
 	if (!st || !getb(st, "isForeground") || getl(st, "taskState") == 3 || !b || strstr(b, "InputUI")) return false;
-	snprintf(out, outsz, "{\"bundle\":\"%s\",\"pid\":%ld}\n", b, getl(st, "pid"));
+	snprintf(out, outsz, "{\"bundle\":\"%s\",\"pid\":%ld,\"locked\":false}\n", b, getl(st, "pid"));
 	return true;
 }
 
 static void write_front(void) {
-	id ctl = SEND(id, (id)objc_getClass("SBApplicationController"), "sharedInstanceIfExists")(
-		(id)objc_getClass("SBApplicationController"), SEL_("sharedInstanceIfExists"));
-	id sb = SEND(id, (id)objc_getClass("UIApplication"), "sharedApplication")((id)objc_getClass("UIApplication"), SEL_("sharedApplication"));
-	id front = get(sb, "_accessibilityFrontMostApplication");
-	id apps = get(ctl, "runningApplications");
+	bool locked = is_ui_locked();
 	char out[512];
-	snprintf(out, sizeof out, "{\"bundle\":null,\"pid\":0}\n");
-	if (!pick_front_app(front, out, sizeof out)) {
-		for (unsigned long i = 0, n = count(apps); i < n; i++)
-			if (pick_front_app(at(apps, i), out, sizeof out)) break;
+	snprintf(out, sizeof out, "{\"bundle\":null,\"pid\":0,\"locked\":%s}\n", locked ? "true" : "false");
+	if (!locked) {
+		id ctl = SEND(id, (id)objc_getClass("SBApplicationController"), "sharedInstanceIfExists")(
+			(id)objc_getClass("SBApplicationController"), SEL_("sharedInstanceIfExists"));
+		id sb = SEND(id, (id)objc_getClass("UIApplication"), "sharedApplication")((id)objc_getClass("UIApplication"), SEL_("sharedApplication"));
+		id front = get(sb, "_accessibilityFrontMostApplication");
+		id apps = get(ctl, "runningApplications");
+		if (!pick_front_app(front, out, sizeof out)) {
+			for (unsigned long i = 0, n = count(apps); i < n; i++)
+				if (pick_front_app(at(apps, i), out, sizeof out)) break;
+		}
 	}
 	write_file("front.json", out, strlen(out));
 }
