@@ -4,8 +4,9 @@
 use crate::device::Device;
 use anyhow::{Context, Result, bail};
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 /// The phone's settings from its sim.env (screen size, scale, name...).
 pub fn sim_env(dev: &Device) -> Result<HashMap<String, String>> {
@@ -209,7 +210,32 @@ pub fn x86sim_run(dev: &Device, args: &[&str]) -> Result<Output> {
 
 /// Like x86sim_run, but fails with x86Sim's own message when it fails.
 pub fn x86sim_ok(dev: &Device, args: &[&str]) -> Result<String> {
-    let out = x86sim_run(dev, args)?;
+    x86sim_check(args, x86sim_run(dev, args)?)
+}
+
+/// Like x86sim_ok, piping `input` on stdin (used for JSON payloads without inheriting MCP stdio).
+pub fn x86sim_ok_stdin(dev: &Device, args: &[&str], input: &[u8]) -> Result<String> {
+    let ring = dev.ring_path().ok();
+    let mut cmd = Command::new(x86sim()?);
+    cmd.arg("x86sim")
+        .args(args)
+        .env("X86SIM_DEVICE", &dev.dir)
+        .current_dir(crate::device::data_dir()?)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(r) = ring {
+        cmd.env("SIMFB_RING_LINUX", r);
+    }
+    let mut child = cmd.spawn().context("running x86sim")?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(input).context("writing to x86sim stdin")?;
+    }
+    let out = child.wait_with_output().context("waiting for x86sim")?;
+    x86sim_check(args, out)
+}
+
+fn x86sim_check(args: &[&str], out: Output) -> Result<String> {
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);

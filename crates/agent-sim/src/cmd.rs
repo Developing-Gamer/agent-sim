@@ -770,6 +770,201 @@ pub fn status_bar(
     Ok("status bar overridden".into())
 }
 
+/// Services accepted by `x86sim privacy` / `simctl privacy`.
+pub const PRIVACY_SERVICES: &[&str] = &[
+    "all",
+    "location",
+    "location-always",
+    "calendar",
+    "contacts",
+    "contacts-limited",
+    "photos",
+    "photos-add",
+    "media-library",
+    "microphone",
+    "motion",
+    "reminders",
+    "siri",
+    "camera",
+    "homekit",
+];
+
+fn resolve_host_file(path: &Path) -> Result<PathBuf> {
+    let abs = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    if !abs.is_file() {
+        bail!("{}: no such file", path.display());
+    }
+    Ok(abs)
+}
+
+fn validate_coords(lat: f64, lon: f64) -> Result<(f64, f64)> {
+    if !lat.is_finite() || !(-90.0..=90.0).contains(&lat) {
+        bail!("latitude must be between -90 and 90 (got {lat})");
+    }
+    if !lon.is_finite() || !(-180.0..=180.0).contains(&lon) {
+        bail!("longitude must be between -180 and 180 (got {lon})");
+    }
+    Ok((lat, lon))
+}
+
+pub fn parse_lat_lon(coords: &str) -> Result<(f64, f64)> {
+    let mut parts = coords.trim().split(',');
+    let (Some(a), Some(b), None) = (parts.next(), parts.next(), parts.next()) else {
+        bail!("expected LAT,LON (e.g. 51.5074,-0.1278), got {coords:?}");
+    };
+    let lat: f64 = a
+        .trim()
+        .parse()
+        .with_context(|| format!("invalid latitude in {coords:?}"))?;
+    let lon: f64 = b
+        .trim()
+        .parse()
+        .with_context(|| format!("invalid longitude in {coords:?}"))?;
+    validate_coords(lat, lon)
+}
+
+pub fn location_set(dev: &Device, lat: f64, lon: f64) -> Result<String> {
+    let (lat, lon) = validate_coords(lat, lon)?;
+    let dev_dir = dev.dir.to_string_lossy();
+    let pair = format!("{lat},{lon}");
+    phone::x86sim_ok(dev, &["location", &dev_dir, "set", &pair])?;
+    Ok(format!("location set to {pair}"))
+}
+
+pub fn location_clear(dev: &Device) -> Result<String> {
+    let dev_dir = dev.dir.to_string_lossy();
+    phone::x86sim_ok(dev, &["location", &dev_dir, "clear"])?;
+    Ok("location cleared".into())
+}
+
+pub fn addmedia(dev: &Device, paths: &[PathBuf]) -> Result<String> {
+    if paths.is_empty() {
+        bail!("addmedia requires at least one image or video file");
+    }
+    let resolved: Vec<String> = paths
+        .iter()
+        .map(|p| Ok(resolve_host_file(p)?.to_string_lossy().into_owned()))
+        .collect::<Result<_>>()?;
+    let dev_dir = dev.dir.to_string_lossy();
+    let mut args: Vec<&str> = Vec::with_capacity(resolved.len() + 2);
+    args.push("addmedia");
+    args.push(&dev_dir);
+    for p in &resolved {
+        args.push(p.as_str());
+    }
+    let out = phone::x86sim_ok(dev, &args)?;
+    let msg = out.trim();
+    if msg.is_empty() {
+        Ok(format!("added {}", resolved.len()))
+    } else {
+        Ok(msg.to_string())
+    }
+}
+
+fn validate_privacy<'a>(
+    action: &'a str,
+    service: &'a str,
+    bundle_id: Option<&'a str>,
+) -> Result<Option<&'a str>> {
+    if !matches!(action, "grant" | "revoke" | "reset") {
+        bail!("privacy action must be grant, revoke or reset (got {action:?})");
+    }
+    if !PRIVACY_SERVICES.contains(&service) {
+        bail!(
+            "unknown privacy service {service:?} (expected one of: {})",
+            PRIVACY_SERVICES.join(", ")
+        );
+    }
+    let bundle = bundle_id.map(str::trim).filter(|b| !b.is_empty());
+    if action != "reset" && bundle.is_none() {
+        bail!("privacy {action} requires a bundle id");
+    }
+    if action == "reset"
+        && matches!(service, "location" | "location-always")
+        && bundle.is_none()
+    {
+        bail!("privacy reset {service} requires a bundle id");
+    }
+    Ok(bundle)
+}
+
+pub fn privacy(
+    dev: &Device,
+    action: &str,
+    service: &str,
+    bundle_id: Option<&str>,
+) -> Result<String> {
+    let bundle = validate_privacy(action, service, bundle_id)?;
+    let dev_dir = dev.dir.to_string_lossy();
+    let mut args = vec!["privacy", &dev_dir, action, service];
+    if let Some(b) = bundle {
+        args.push(b);
+    }
+    phone::x86sim_ok(dev, &args)?;
+    Ok(match bundle {
+        Some(b) => format!("privacy {action} {service} for {b}"),
+        None => format!("privacy {action} {service}"),
+    })
+}
+
+fn validate_push_payload(bundle_id: Option<&str>, bytes: &[u8]) -> Result<String> {
+    let payload: serde_json::Value =
+        serde_json::from_slice(bytes).context("parsing push notification JSON payload")?;
+    let Some(obj) = payload.as_object() else {
+        bail!("push payload must be a JSON object");
+    };
+    if !obj.get("aps").is_some_and(serde_json::Value::is_object) {
+        bail!("push payload must contain an \"aps\" JSON object");
+    }
+    let target = bundle_id
+        .map(str::trim)
+        .filter(|b| !b.is_empty())
+        .or_else(|| {
+            obj.get("Simulator Target Bundle")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|b| !b.is_empty())
+        })
+        .context("push requires a bundle id (argument or \"Simulator Target Bundle\" in the payload)")?;
+    Ok(target.to_string())
+}
+
+pub fn push_json(dev: &Device, bundle_id: Option<&str>, payload_bytes: &[u8]) -> Result<String> {
+    let target = validate_push_payload(bundle_id, payload_bytes)?;
+    let dev_dir = dev.dir.to_string_lossy();
+    let out = phone::x86sim_ok_stdin(dev, &["push", &dev_dir, &target, "-"], payload_bytes)?;
+    let msg = out.trim();
+    if msg.is_empty() {
+        Ok(format!("Notification sent to '{target}'"))
+    } else {
+        Ok(msg.to_string())
+    }
+}
+
+pub fn push_cli(dev: &Device, args: &[String]) -> Result<String> {
+    use std::io::Read;
+    let (bundle, src) = match args {
+        [src] => (None, src.as_str()),
+        [bundle, src] => (Some(bundle.as_str()), src.as_str()),
+        _ => bail!("usage: agent-sim push [BUNDLE_ID] PAYLOAD.json|-"),
+    };
+    let bytes = if src == "-" {
+        let mut buf = Vec::new();
+        std::io::stdin()
+            .read_to_end(&mut buf)
+            .context("reading push payload from stdin")?;
+        buf
+    } else {
+        let path = resolve_host_file(Path::new(src))?;
+        std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?
+    };
+    push_json(dev, bundle, &bytes)
+}
+
 /// A fresh phone under the same name: its apps, data and settings gone, as `simctl erase`.
 pub fn erase(name: &str) -> Result<()> {
     let dir = crate::device::data_dir()?
@@ -846,7 +1041,10 @@ pub fn record(dev: &Device, out: &Path, secs: f64, fps: u32) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{TypeStep, drag_progress, launch_args, rotate, type_steps};
+    use super::{
+        TypeStep, drag_progress, launch_args, parse_lat_lon, rotate, type_steps, validate_privacy,
+        validate_push_payload,
+    };
 
     #[test]
     fn launch_args_forwards_logs_env_and_app_args() {
@@ -911,6 +1109,48 @@ mod tests {
         let first_step = drag_progress(0.1, true) - drag_progress(0.0, true);
         let last_step = drag_progress(1.0, true) - drag_progress(0.9, true);
         assert!(last_step < first_step * 0.05);
+    }
+
+    #[test]
+    fn lat_lon_parsing_and_bounds() {
+        assert_eq!(parse_lat_lon("51.5074,-0.1278").unwrap(), (51.5074, -0.1278));
+        assert_eq!(parse_lat_lon(" -33.8688 , 151.2093 ").unwrap(), (-33.8688, 151.2093));
+        assert!(parse_lat_lon("91,0").is_err());
+        assert!(parse_lat_lon("0,181").is_err());
+        assert!(parse_lat_lon("51.5").is_err());
+        assert!(parse_lat_lon("1,2,3").is_err());
+        assert!(parse_lat_lon("NaN,0").is_err());
+    }
+
+    #[test]
+    fn privacy_validation_matches_simctl_rules() {
+        assert_eq!(
+            validate_privacy("grant", "location", Some("com.example.app")).unwrap(),
+            Some("com.example.app")
+        );
+        assert_eq!(validate_privacy("reset", "photos", None).unwrap(), None);
+        assert!(validate_privacy("grant", "location", None).is_err());
+        assert!(validate_privacy("revoke", "camera", None).is_err());
+        assert!(validate_privacy("reset", "location", None).is_err());
+        assert!(validate_privacy("reset", "location-always", None).is_err());
+        assert!(validate_privacy("grant", "bogus", Some("com.example.app")).is_err());
+    }
+
+    #[test]
+    fn push_payload_validation_requires_aps_and_bundle() {
+        let with_target = br#"{"Simulator Target Bundle":"com.example.app","aps":{"alert":"hi"}}"#;
+        assert_eq!(
+            validate_push_payload(None, with_target).unwrap(),
+            "com.example.app"
+        );
+        let no_target = br#"{"aps":{"alert":"hi"}}"#;
+        assert_eq!(
+            validate_push_payload(Some("com.other.app"), no_target).unwrap(),
+            "com.other.app"
+        );
+        assert!(validate_push_payload(None, no_target).is_err());
+        assert!(validate_push_payload(Some("com.other.app"), br#"{"alert":"hi"}"#).is_err());
+        assert!(validate_push_payload(Some("com.other.app"), b"not json").is_err());
     }
 
     // a 2x1 image (red, green) turned each way
