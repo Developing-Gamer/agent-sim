@@ -41,7 +41,7 @@ def main():
     ap.add_argument("--out", default="smoke")
     a = ap.parse_args()
     home = os.path.expanduser("~")
-    ver = os.environ.get("X86SIM_VERSION", "0.5.2")
+    ver = os.environ.get("X86SIM_VERSION", "0.5.3")
     x86sim = os.path.join(os.environ.get("AGENT_SIM_HOME", f"{home}/.local/share/agent-sim"), f"x86sim-{ver}", "AppRun")
     data = os.path.join(os.environ.get("XDG_DATA_HOME", f"{home}/.local/share"), "x86sim")
     ring = f"{home}/.cache/x86sim/rings/x86sim-a64-{a.device}-simfb.ring"

@@ -5,7 +5,7 @@
 #   scripts/setup-vm.sh
 #
 # Environment:
-#   X86SIM_VERSION   x86Sim release (default 0.5.2)
+#   X86SIM_VERSION   x86Sim release (default 0.5.3)
 #   RUNTIME_BUILD    iOS runtime build from Apple's catalogue (default 24B8117, iOS 27.2)
 #   DEVICE, MODEL    the phone to create (default p, "iPhone 17 Pro (at 2x)")
 #   FIDELITY=high    a phone that looks exactly like Apple's simulator: the model's own pixel density ("iPhone 17 Pro",
@@ -16,7 +16,7 @@
 # Apple's iOS runtime is downloaded from Apple onto this machine (about 8 GB) and never leaves it.
 set -Eeuo pipefail
 
-X86SIM_VERSION=${X86SIM_VERSION:-0.5.2}
+X86SIM_VERSION=${X86SIM_VERSION:-0.5.3}
 RUNTIME_BUILD=${RUNTIME_BUILD:-24B8117}
 DEVICE=${DEVICE:-p}
 FIDELITY=${FIDELITY:-fast}
