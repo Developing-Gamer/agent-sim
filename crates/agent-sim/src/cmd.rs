@@ -705,14 +705,21 @@ pub fn effects(name: &str, mode: &str) -> Result<String> {
     Ok(format!("effects {mode}"))
 }
 
-/// The general pasteboard, through SpringBoard (a background process may not read it): `None` reads it.
+/// Sets the general pasteboard through SpringBoard. Reading arbitrary third-party clipboard content
+/// synchronously from SpringBoard's main queue deadlocks iOS's paste-permission flow, so reads return
+/// an explicit error instead of hanging the phone.
 pub fn clipboard(dev: &Device, set: Option<&str>) -> Result<String> {
     match set {
         Some(t) => {
-            springboard(dev, &format!("pasteboard-set\n{t}"))?;
+            let r = springboard(dev, &format!("pasteboard-set\n{t}"))?;
+            if r != "ok" {
+                bail!("clipboard set failed: {r}");
+            }
             Ok("clipboard set".into())
         }
-        None => springboard(dev, "pasteboard-get"),
+        None => bail!(
+            "reading the clipboard is not supported yet (iOS paste authorization blocks SpringBoard's main thread; `agent-sim clipboard TEXT` still sets it)"
+        ),
     }
 }
 
@@ -822,7 +829,7 @@ pub fn record(dev: &Device, out: &Path, secs: f64, fps: u32) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{TypeStep, launch_args, rotate, type_steps};
+    use super::{TypeStep, clipboard, launch_args, rotate, type_steps};
 
     #[test]
     fn launch_args_forwards_logs_env_and_app_args() {
@@ -874,6 +881,18 @@ mod tests {
             ]
         );
         assert_eq!(type_steps(""), Vec::<TypeStep>::new());
+    }
+
+    use crate::device::Device;
+    use std::path::PathBuf;
+
+    #[test]
+    fn clipboard_read_returns_error_without_signalling_springboard() {
+        let dev = Device {
+            dir: PathBuf::from("/nonexistent"),
+        };
+        let err = clipboard(&dev, None).unwrap_err().to_string();
+        assert!(err.contains("not supported"), "unexpected error: {err}");
     }
 
     // a 2x1 image (red, green) turned each way

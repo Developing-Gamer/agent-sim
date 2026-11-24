@@ -282,14 +282,18 @@ static void request(void) {
 		write_file("answer.txt", "ok", 2);
 		return;
 	}
-	id pb = SEND(id, (id)objc_getClass("UIPasteboard"), "generalPasteboard")((id)objc_getClass("UIPasteboard"), SEL_("generalPasteboard"));
-	if (!pb) return;
 	if (!strncmp(req, "pasteboard-set\n", 15)) {
+		id pb = SEND(id, (id)objc_getClass("UIPasteboard"), "generalPasteboard")((id)objc_getClass("UIPasteboard"), SEL_("generalPasteboard"));
+		if (!pb) {
+			write_file("answer.txt", "no-pasteboard", 13);
+			return;
+		}
 		SEND(void, pb, "setString:", id)(pb, SEL_("setString:"), nsstring(req + 15));
 		write_file("answer.txt", "ok", 2);
 	} else if (!strncmp(req, "pasteboard-get", 14)) {
-		const char *t = utf8(get(pb, "string"));
-		write_file("answer.txt", t ? t : "", t ? strlen(t) : 0);
+		// Reading generalPasteboard.string synchronously on SpringBoard's main queue deadlocks SpringBoard
+		// when another app owns the pasteboard (iOS paste-permission UI blocks on the same main queue).
+		write_file("answer.txt", "unsupported", 11);
 	}
 }
 
