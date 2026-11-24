@@ -227,18 +227,70 @@ pub fn scroll(dev: &Device, dir: &str, amount: f64) -> Result<String> {
     Ok(format!("scrolled {dir}"))
 }
 
-/// Types into the field that has focus. The app inserts the text as the software keyboard does, which every field
-/// takes (web fields lost most hardware key events); with no field in focus, or `keys`, it goes as key presses.
-pub fn type_text(dev: &Device, text: &str, keys: bool) -> Result<String> {
-    if !keys && insert_text(dev, text)? {
-        return Ok(format!("typed {} characters", text.chars().count()));
+#[derive(Debug, PartialEq, Eq)]
+enum TypeStep<'a> {
+    Text(&'a str),
+    Return,
+}
+
+/// Splits text on newlines so single-line iOS fields (which turn `\n` passed to `insertText:` into a space instead of
+/// submitting) receive Return as an actual HID key press.
+fn type_steps(text: &str) -> Vec<TypeStep<'_>> {
+    let mut steps = Vec::new();
+    for (i, part) in text.split('\n').enumerate() {
+        if i > 0 {
+            steps.push(TypeStep::Return);
+        }
+        if !part.is_empty() {
+            steps.push(TypeStep::Text(part));
+        }
     }
+    steps
+}
+
+fn type_keys(dev: &Device, text: &str) -> Result<()> {
     if text.chars().all(|c| crate::input::key_usage(c).is_some()) {
         hid(dev).text(text)?;
     } else {
         // characters without a key of their own go through x86Sim's typing
         phone::x86sim_ok(dev, &["type", text])?;
     }
+    Ok(())
+}
+
+/// Types into the field that has focus. The app inserts the text as the software keyboard does, which every field
+/// takes (web fields lost most hardware key events), and sends `\n` as a HID Return key so single-line fields submit;
+/// with no field in focus, or `keys`, it goes as key presses.
+pub fn type_text(dev: &Device, text: &str, keys: bool) -> Result<String> {
+    if !keys {
+        let steps = type_steps(text);
+        if steps.iter().any(|s| matches!(s, TypeStep::Text(_))) {
+            let mut sent_any = false;
+            let mut fallback = false;
+            for step in &steps {
+                match step {
+                    TypeStep::Text(part) => {
+                        if insert_text(dev, part)? {
+                            sent_any = true;
+                        } else if !sent_any {
+                            fallback = true;
+                            break;
+                        } else {
+                            type_keys(dev, part)?;
+                        }
+                    }
+                    TypeStep::Return => {
+                        hid(dev).text("\n")?;
+                        sent_any = true;
+                    }
+                }
+            }
+            if !fallback {
+                return Ok(format!("typed {} characters", text.chars().count()));
+            }
+        }
+    }
+    type_keys(dev, text)?;
     Ok(format!(
         "typed {} characters as key presses",
         text.chars().count()
@@ -741,7 +793,27 @@ pub fn record(dev: &Device, out: &Path, secs: f64, fps: u32) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::rotate;
+    use super::{TypeStep, rotate, type_steps};
+
+    #[test]
+    fn type_steps_separates_return_keys() {
+        assert_eq!(type_steps("hello"), vec![TypeStep::Text("hello")]);
+        assert_eq!(
+            type_steps("hello\n"),
+            vec![TypeStep::Text("hello"), TypeStep::Return]
+        );
+        assert_eq!(type_steps("\n"), vec![TypeStep::Return]);
+        assert_eq!(
+            type_steps("a\nb\n"),
+            vec![
+                TypeStep::Text("a"),
+                TypeStep::Return,
+                TypeStep::Text("b"),
+                TypeStep::Return,
+            ]
+        );
+        assert_eq!(type_steps(""), Vec::<TypeStep>::new());
+    }
 
     // a 2x1 image (red, green) turned each way
     #[test]
