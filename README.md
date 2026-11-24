@@ -119,6 +119,18 @@ Phones share memory through the kernel's KSM: three take 6.8 GB together instead
 with VM memory snapshots, a booted phone can be saved and brought back running in about 20 seconds
 ([docs/BENCHMARKS.md](docs/BENCHMARKS.md)).
 
+## What it can and cannot tell you
+
+Pick the checks you need before putting agent-sim in CI:
+
+| Check | agent-sim today |
+|---|---|
+| Agent-driven or scripted UI checks (launch, tap, type, read the screen, record) | yes |
+| XCUITest suites | not yet |
+| Real-device behavior (camera, push delivery, signing, FairPlay/DRM, device performance) | no: use a real device |
+
+[docs/PARITY.md](docs/PARITY.md) compares every feature with Apple's Simulator on a Mac.
+
 ## How it works
 
 [x86Sim](https://github.com/x86sim/x86sim) runs Apple's arm64 simulator runtime on x86-64 Linux: Darling provides
