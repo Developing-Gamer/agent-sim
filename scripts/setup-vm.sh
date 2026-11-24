@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Turn a fresh Ubuntu 24.04 x86-64 machine into one that runs an iOS phone with x86Sim, set up the way agent-sim
+# Turn a fresh Linux x86-64 machine into one that runs an iOS phone with x86Sim, set up the way agent-sim
 # measured fastest. Re-runnable: each step skips what is already done.
 #
 #   scripts/setup-vm.sh
@@ -42,15 +42,54 @@ free_gb=$(df -BG --output=avail "$HOME" | tail -1 | tr -dc 0-9)
 [ "$free_gb" -ge 45 ] || [ -d "$DATA/runtimes" ] || die "need 45 GB free in $HOME for the runtime, have ${free_gb} GB"
 [ "$(nproc)" -ge 4 ] || echo "warning: fewer than 4 CPUs; the phone will be slow"
 
+have_vulkan_icd() {
+	if [ -n "${VK_ICD_FILENAMES:-}" ]; then
+		local icd
+		IFS=: read -ra icds <<<"$VK_ICD_FILENAMES"
+		for icd in "${icds[@]}"; do [ -f "$icd" ] && return 0; done
+	fi
+	compgen -G "/usr/share/vulkan/icd.d/*.json" >/dev/null || compgen -G "/etc/vulkan/icd.d/*.json" >/dev/null
+}
+
+have_runtime_packages() {
+	for bin in python3 curl openssl jq ffmpeg; do
+		command -v "$bin" >/dev/null || return 1
+	done
+	python3 -c "import PIL, dns" 2>/dev/null || return 1
+	have_vulkan_icd
+}
+
+install_runtime_packages() {
+	if have_runtime_packages; then
+		echo "all required packages are already installed"
+		return 0
+	fi
+	if command -v apt-get >/dev/null; then
+		sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
+		sudo DEBIAN_FRONTEND=noninteractive apt-get install -yqq \
+			python3 python3-pil python3-dnspython curl openssl jq mesa-vulkan-drivers ffmpeg >/dev/null
+	elif command -v pacman >/dev/null; then
+		local pkgs=(python python-pillow python-dnspython curl openssl jq vulkan-swrast ffmpeg)
+		# Arch ships libxml2.so.16, while x86Sim 0.5.2 links libxml2.so.2
+		ldconfig -p 2>/dev/null | grep -q "libxml2\.so\.2" || pkgs+=(libxml2-legacy)
+		sudo pacman -S --needed --noconfirm "${pkgs[@]}" >/dev/null
+	elif command -v dnf >/dev/null; then
+		sudo dnf install -y -q \
+			python3 python3-pillow python3-dns curl openssl jq mesa-vulkan-drivers ffmpeg >/dev/null
+	else
+		die "missing packages (need python3 with PIL and dnspython, curl, openssl, jq, ffmpeg and a Vulkan ICD) and no supported package manager (apt-get, pacman, dnf) found"
+	fi
+}
+
 log "Installing packages"
-sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
-sudo DEBIAN_FRONTEND=noninteractive apt-get install -yqq \
-	python3 python3-pil python3-dnspython curl openssl jq mesa-vulkan-drivers ffmpeg >/dev/null
+install_runtime_packages
 
 log "Keeping a user session for x86Sim's sockets and services"
 # x86Sim puts sockets under /run/user/<uid> and runs phones as user services; without a login session (a server
 # reached over SSH or an API) neither exists unless the user lingers.
-sudo loginctl enable-linger "$USER"
+if [ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null || true)" != yes ]; then
+	sudo loginctl enable-linger "$USER"
+fi
 for _ in $(seq 20); do [ -S "/run/user/$(id -u)/bus" ] && break; sleep 0.5; done
 export XDG_RUNTIME_DIR=/run/user/$(id -u)
 export DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus

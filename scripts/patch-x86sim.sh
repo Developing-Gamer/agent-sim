@@ -42,7 +42,25 @@ if installed; then
 	exit 0
 fi
 
-sudo DEBIAN_FRONTEND=noninteractive apt-get install -yqq clang cmake ninja-build git libboost-dev >/dev/null
+have_build_packages() {
+	for bin in clang clang++ cmake ninja git; do
+		command -v "$bin" >/dev/null || return 1
+	done
+	[ -d /usr/include/boost ]
+}
+
+if ! have_build_packages; then
+	if command -v apt-get >/dev/null; then
+		sudo DEBIAN_FRONTEND=noninteractive apt-get install -yqq clang cmake ninja-build git libboost-dev >/dev/null
+	elif command -v pacman >/dev/null; then
+		sudo pacman -S --needed --noconfirm clang cmake ninja git boost >/dev/null
+	elif command -v dnf >/dev/null; then
+		sudo dnf install -y -q clang cmake ninja-build git boost-devel >/dev/null
+	else
+		echo "patch-x86sim.sh: install clang, cmake, ninja, git and boost headers first" >&2
+		exit 1
+	fi
+fi
 if [ ! -d "$SRC/.git" ]; then
 	git clone -q --depth 1 --branch "v$X86SIM_VERSION" https://github.com/x86sim/x86sim.git "$SRC"
 	# the submodule URLs are SSH; the same repositories over HTTPS need no GitHub key
