@@ -144,7 +144,7 @@ pub fn home() -> Result<PathBuf> {
 
 /// x86Sim's launcher (the unpacked AppImage's AppRun).
 pub fn x86sim() -> Result<PathBuf> {
-    let ver = std::env::var("X86SIM_VERSION").unwrap_or_else(|_| "0.5.2".into());
+    let ver = std::env::var("X86SIM_VERSION").unwrap_or_else(|_| "0.5.3".into());
     let p = home()?.join(format!("x86sim-{ver}/AppRun"));
     if !p.is_file() {
         bail!(

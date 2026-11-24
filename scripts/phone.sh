@@ -32,7 +32,7 @@ set -Eeuo pipefail
 ACTION=${1:?usage: phone.sh start|wait|stop|status [DEVICE]}
 DEVICE=${2:-${DEVICE:-p}}
 ROOT=${AGENT_SIM_HOME:-$HOME/.local/share/agent-sim}
-X86SIM_VERSION=${X86SIM_VERSION:-0.5.2}
+X86SIM_VERSION=${X86SIM_VERSION:-0.5.3}
 X=$ROOT/x86sim-$X86SIM_VERSION/AppRun
 DATA=${XDG_DATA_HOME:-$HOME/.local/share}/x86sim
 DIR=$DATA/var/device-a64-$DEVICE

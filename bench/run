@@ -72,7 +72,7 @@ def wait_quiet(limit=300, load=1.5):
 class Phone:
     def __init__(self, device, extra_env):
         self.device = device
-        ver = os.environ.get("X86SIM_VERSION", "0.5.2")
+        ver = os.environ.get("X86SIM_VERSION", "0.5.3")
         home = os.path.expanduser("~")
         self.x86sim = os.path.join(os.environ.get("AGENT_SIM_HOME", f"{home}/.local/share/agent-sim"),
                                    f"x86sim-{ver}", "AppRun")

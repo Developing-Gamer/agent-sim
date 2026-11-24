@@ -1,6 +1,6 @@
 # Fixes to x86Sim
 
-Patches against x86Sim's tagged source (currently `v0.5.2`), built and installed by `scripts/patch-x86sim.sh`
+Patches against x86Sim's tagged source (currently `v0.5.3`), built and installed by `scripts/patch-x86sim.sh`
 (`scripts/setup-vm.sh` runs it unless `AGENT_SIM_PATCH_X86SIM=0`). They change x86Sim's code, so they are under
 x86Sim's license, GPL-3.0-or-later, and are meant to go upstream; each one is dropped here once an x86Sim release
 includes it.

@@ -9,7 +9,7 @@
 # The build fetches x86Sim's tagged source and dynarmic from GitHub, needs about 2 GB and takes 5-10 minutes.
 set -Eeuo pipefail
 
-X86SIM_VERSION=${X86SIM_VERSION:-0.5.2}
+X86SIM_VERSION=${X86SIM_VERSION:-0.5.3}
 ROOT=${AGENT_SIM_HOME:-$HOME/.local/share/agent-sim}
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PATCHES=$HERE/../patches/x86sim
