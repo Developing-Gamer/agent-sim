@@ -89,6 +89,7 @@ static const struct { unsigned long bit; const char *name; } kTraits[] = {
 	{1ul << 18, "text-field"},  // UIKit's private text entry trait: native and web text fields, search fields
 };
 
+static bool g_status_time_overridden;
 static int emitted;
 static void emit(id e) {
 	Rect f = frame_of(e);
@@ -99,6 +100,13 @@ static void emit(id e) {
 	if (kind(e, "UITextField") || kind(e, "UITextView")) {  // the text itself, and what it is
 		if (!value) value = utf8(get(e, "text"));
 		if (!label) label = utf8(get(e, "placeholder"));
+	}
+	if ((kind(e, "STUIStatusBarStringView") || kind(e, "_UIStatusBarStringView")) && (traits & (1ul << 9))) {
+		// Status-bar time overrides update the rendered label text while accessibilityLabel keeps wall time.
+		const char *shown = utf8(get(e, "text"));
+		if (!shown || !*shown) shown = utf8(get(e, "originalText"));
+		if (shown && *shown && (g_status_time_overridden || !label || strncmp(label, shown, strlen(shown)) != 0))
+			label = shown;
 	}
 	if (!label && !value && !ident && !(traits & ((1ul << 0) | (1ul << 1) | (1ul << 10) | (1ul << 18)))) return;
 	puts_(emitted++ ? ",\n{" : "\n{");
@@ -229,6 +237,7 @@ static const char *status_bar(char *req) {
 	if (!g_status_publisher) g_status_publisher = alloc_init("STStatusBarOverridesStatusDomainPublisher");
 	// clearing publishes an empty set of overrides (the domain's emptyData crashed SpringBoard here)
 	bool clear = !strncmp(req, "statusbar-clear", 15);
+	if (clear) g_status_time_overridden = false;
 	id data = alloc_init("STMutableStatusBarData");
 	long battery = -1;
 	int charging = 0;
@@ -238,6 +247,7 @@ static const char *status_bar(char *req) {
 		*eq = 0;
 		const char *k = line, *v = eq + 1;
 		if (!strcmp(k, "time")) {
+			g_status_time_overridden = true;
 			Class sc = objc_getClass("STStatusBarDataStringEntry");
 			id e = SEND(id, (id)sc, "entryWithStringValue:", id)((id)sc, SEL_("entryWithStringValue:"), nsstring(v));
 			SEND(void, data, "setTimeEntry:", id)(data, SEL_("setTimeEntry:"), e);
