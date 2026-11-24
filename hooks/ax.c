@@ -182,7 +182,17 @@ static void write_file(const char *name, const char *data, size_t n) {
 }
 
 // SpringBoard: which app is in front (bundle id and pid), or none (the home screen). Foreground system UI services
-// (the keyboard's InputUI) are not the app.
+// (the keyboard's InputUI) are not the app. Skip suspended processes (FBProcessTaskStateSuspended == 3): dismissed
+// remote view services such as SafariViewService can stay marked isForeground while suspended and would otherwise
+// shadow the host app.
+static bool pick_front_app(id app, char *out, size_t outsz) {
+	id st = app ? get(app, "processState") : nil;
+	const char *b = app ? utf8(get(app, "bundleIdentifier")) : NULL;
+	if (!st || !getb(st, "isForeground") || getl(st, "taskState") == 3 || !b || strstr(b, "InputUI")) return false;
+	snprintf(out, outsz, "{\"bundle\":\"%s\",\"pid\":%ld}\n", b, getl(st, "pid"));
+	return true;
+}
+
 static void write_front(void) {
 	id ctl = SEND(id, (id)objc_getClass("SBApplicationController"), "sharedInstanceIfExists")(
 		(id)objc_getClass("SBApplicationController"), SEL_("sharedInstanceIfExists"));
@@ -191,12 +201,9 @@ static void write_front(void) {
 	id apps = get(ctl, "runningApplications");
 	char out[512];
 	snprintf(out, sizeof out, "{\"bundle\":null,\"pid\":0}\n");
-	for (unsigned long i = 0, n = front ? 1 : count(apps); i < n; i++) {
-		id app = front ? front : at(apps, i), st = get(app, "processState");
-		const char *b = utf8(get(app, "bundleIdentifier"));
-		if (!st || !getb(st, "isForeground") || !b || strstr(b, "InputUI")) continue;
-		snprintf(out, sizeof out, "{\"bundle\":\"%s\",\"pid\":%ld}\n", b, getl(st, "pid"));
-		break;
+	if (!pick_front_app(front, out, sizeof out)) {
+		for (unsigned long i = 0, n = count(apps); i < n; i++)
+			if (pick_front_app(at(apps, i), out, sizeof out)) break;
 	}
 	write_file("front.json", out, strlen(out));
 }
@@ -357,6 +364,39 @@ static void dump_web_now(void *ctx) {
 	write_file(name, buf, len);
 }
 
+// Visible windows in this process: UIApplication.windows is empty in hosted remote view services such as
+// SafariViewService (ASWebAuthenticationSession / SFSafariViewController), whose content lives in a scene window
+// or _UIHostedWindow. Fall back to connectedScenes and +[UIWindow allWindowsIncludingInternalWindows:onlyVisibleWindows:].
+static id app_windows(id app) {
+	id wins = get(app, "windows");
+	for (unsigned long i = 0, n = count(wins); i < n; i++) {
+		id w = at(wins, i);
+		if (!getb(w, "isHidden") && getd(w, "alpha") >= 0.01) return wins;
+	}
+	id scenes = get(app, "connectedScenes");
+	id all = scenes ? get(scenes, "allObjects") : nil;
+	if (all && count(all)) {
+		id arr = SEND(id, (id)objc_getClass("NSMutableArray"), "array")(
+			(id)objc_getClass("NSMutableArray"), SEL_("array"));
+		for (unsigned long i = 0, n = count(all); i < n; i++) {
+			id sw = get(at(all, i), "windows");
+			for (unsigned long j = 0, m = count(sw); j < m; j++) {
+				id w = at(sw, j);
+				if (!getb(w, "isHidden") && getd(w, "alpha") >= 0.01)
+					SEND(void, arr, "addObject:", id)(arr, SEL_("addObject:"), w);
+			}
+		}
+		if (count(arr)) return arr;
+	}
+	Class wc = objc_getClass("UIWindow");
+	if (wc && responds((id)wc, "allWindowsIncludingInternalWindows:onlyVisibleWindows:")) {
+		id iw = SEND(id, (id)wc, "allWindowsIncludingInternalWindows:onlyVisibleWindows:", bool, bool)(
+			(id)wc, SEL_("allWindowsIncludingInternalWindows:onlyVisibleWindows:"), true, true);
+		if (iw && count(iw)) return iw;
+	}
+	return wins;
+}
+
 // An app: text for the field that has focus, in cmd-<pid>.txt ("insert\n<text>"), inserted as the software
 // keyboard inserts it (UIKeyInput insertText:). Key events from the hardware keyboard reached native fields but
 // lost most characters in web fields. The answer (ok, or no-field) goes to answer-<pid>.txt.
@@ -376,7 +416,7 @@ static bool app_request(void) {
 		return true;
 	}
 	id app = SEND(id, (id)objc_getClass("UIApplication"), "sharedApplication")((id)objc_getClass("UIApplication"), SEL_("sharedApplication"));
-	id wins = get(app, "windows"), responder = nil;
+	id wins = app_windows(app), responder = nil;
 	for (unsigned long i = 0, m = count(wins); i < m && !responder; i++) {
 		id r = get(at(wins, i), "firstResponder");
 		if (r && responds(r, "insertText:")) responder = r;
@@ -410,7 +450,7 @@ static void dump(void *ctx) {
 	char head[256];
 	snprintf(head, sizeof head, "{\"pid\":%d,\"process\":\"%s\",\"windows\":[", getpid(), getprogname());
 	puts_(head);
-	id wins = get(app, "windows");
+	id wins = app_windows(app);
 	int w = 0;
 	g_nwebviews = 0;
 	for (unsigned long i = 0, n = count(wins); i < n; i++) {
