@@ -142,13 +142,18 @@ start)
 		systemd-run --user --quiet --wait --collect --property=MemoryKSM=yes true 2>/dev/null; then
 		passthrough+=(--property=MemoryKSM=yes)
 	fi
+	# Default to lavapipe on headless VMs when it is installed; otherwise let the Vulkan loader pick a host GPU ICD.
+	if [ -n "${VK_ICD_FILENAMES:-}" ]; then
+		passthrough+=(--setenv=VK_ICD_FILENAMES="$VK_ICD_FILENAMES")
+	elif [ -f /usr/share/vulkan/icd.d/lvp_icd.json ]; then
+		passthrough+=(--setenv=VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json)
+	fi
 	systemd-run --user --quiet --unit="$UNIT" --collect "${passthrough[@]}" \
 		--setenv=SIMFB_RING="/Volumes/SystemRoot$RING" \
 		--setenv=X86SIM_METAL="${X86SIM_METAL:-backboardd,iconservicesagent}" \
 		--setenv=LP_NUM_THREADS="${LP_NUM_THREADS:-$(n=$(($(nproc) - 2)); echo $((n < 2 ? 2 : n > 6 ? 6 : n)))}" \
 		--setenv=A64_JOBS="${A64_JOBS:-slim}" \
 		--setenv=X86SIM_IO_MAX="${X86SIM_IO_MAX:-0}" \
-		--setenv=VK_ICD_FILENAMES="${VK_ICD_FILENAMES:-/usr/share/vulkan/icd.d/lvp_icd.json}" \
 		"$X" shell -c "A64_DEVICE=$DIR A64_KEEP=1 SECS=7200 cli/libexec/arm64/boot-a64.sh ${AGENT_SIM_EXTRA_JOBS-$DEFAULT_EXTRA_JOBS}"
 	echo "phone.sh: starting $DEVICE (journalctl --user -u $UNIT)"
 	;;
