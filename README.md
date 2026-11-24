@@ -9,7 +9,11 @@
 <a href="https://github.com/Developing-Gamer/agent-sim/releases/download/v0.1.0/agent-sim-demo.mp4">An agent driving
 Settings and Safari</a></p>
 
-agent-sim runs Apple's iOS simulator runtime on an x86-64 Linux VM and gives agents what they need to test iOS
+> **agent-sim is built on [x86Sim](https://github.com/x86sim/x86sim) by [designgears](https://github.com/designgears).**
+> x86Sim is what runs Apple's iOS simulator on Linux, and it has done that since its first release. agent-sim is the
+> agent layer on top of it. If agent-sim is useful to you, [star x86Sim](https://github.com/x86sim/x86sim) too.
+
+agent-sim takes the iOS simulator that x86Sim runs on an x86-64 Linux VM and gives agents what they need to test iOS
 apps: install an `.ipa`, read the screen as text, tap, type, scroll, and watch it live in a browser. One command line
 for scripts and CI, and an MCP server for Claude Code, Cursor, Codex and other agents.
 
@@ -145,7 +149,12 @@ through [Darling](https://github.com/darlinghq/darling), [dynarmic](https://gith
 [metal2vulkan](https://github.com/steelbrain/metal2vulkan). Fixes agent-sim needs in x86Sim itself live in
 [patches/x86sim](patches/x86sim) until they are upstream.
 
-Apple's runtimes are downloaded from Apple onto your own machine and are never part of this repository.
+Apple's runtimes are downloaded from Apple onto your own machine by x86Sim's runtime downloader and are never part of
+this repository.
+
+agent-sim is an independent project. It is not affiliated with, endorsed by or sponsored by Apple, and iOS, Safari and
+Xcode are trademarks of Apple Inc. Apple's simulator runtimes come with Apple's own license terms; check that your use
+complies with them.
 
 ## License
 
