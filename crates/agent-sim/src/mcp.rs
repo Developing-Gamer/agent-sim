@@ -70,8 +70,13 @@ fn tools() -> Value {
         ),
         tool(
             "launch",
-            "Start an app by bundle id (see apps).",
-            json!({"bundle_id": {"type": "string"}}),
+            "Start an app by bundle id (see apps), with optional os_log capture, environment variables and launch arguments.",
+            json!({
+                "bundle_id": {"type": "string"},
+                "logs": {"type": "boolean", "description": "Capture os_log messages (restarts the app if running)"},
+                "env": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Environment variables for the app"},
+                "args": {"type": "array", "items": {"type": "string"}, "description": "Launch arguments passed to the app"}
+            }),
             &["bundle_id"]
         ),
         tool(
@@ -128,6 +133,37 @@ fn f(args: &Value, k: &str) -> Result<f64> {
     args.get(k)
         .and_then(Value::as_f64)
         .with_context(|| format!("missing number {k}"))
+}
+fn parse_env(args: &Value) -> Result<Vec<String>> {
+    let Some(v) = args.get("env") else {
+        return Ok(Vec::new());
+    };
+    let map = v
+        .as_object()
+        .context("env must be an object of string values")?;
+    let mut out = Vec::with_capacity(map.len());
+    for (k, val) in map {
+        let s = val
+            .as_str()
+            .with_context(|| format!("env.{k} must be a string"))?;
+        out.push(format!("{k}={s}"));
+    }
+    Ok(out)
+}
+fn parse_string_list(args: &Value, k: &str) -> Result<Vec<String>> {
+    let Some(v) = args.get(k) else {
+        return Ok(Vec::new());
+    };
+    let arr = v
+        .as_array()
+        .with_context(|| format!("{k} must be an array of strings"))?;
+    arr.iter()
+        .map(|item| {
+            item.as_str()
+                .map(str::to_string)
+                .with_context(|| format!("{k} items must be strings"))
+        })
+        .collect()
 }
 
 fn b64(data: &[u8]) -> String {
@@ -220,7 +256,9 @@ fn call(default_device: &str, name: &str, args: &Value) -> Result<Value> {
         }
         "launch" => {
             let logs = args.get("logs").and_then(Value::as_bool).unwrap_or(false);
-            let done = cmd::launch(&dev, s(args, "bundle_id")?, logs)?;
+            let env = parse_env(args)?;
+            let app_args = parse_string_list(args, "args")?;
+            let done = cmd::launch(&dev, s(args, "bundle_id")?, logs, &env, &app_args)?;
             std::thread::sleep(Duration::from_millis(1500));
             then_snapshot(&dev, done)
         }

@@ -113,6 +113,12 @@ enum Command {
         /// Capture its os_log messages (read them with `agent-sim logs`); restarts it if it runs.
         #[arg(long)]
         logs: bool,
+        /// Environment variable for the app, as KEY=VALUE (repeatable).
+        #[arg(long = "env", value_name = "KEY=VALUE")]
+        env: Vec<String>,
+        /// Arguments passed to the app (after `--`).
+        #[arg(last = true)]
+        args: Vec<String>,
     },
     /// An app's os_log messages and the report of its last run (a crash's cause and backtrace).
     Logs {
@@ -284,7 +290,12 @@ fn main() -> Result<()> {
         Command::Press { button } => say(cmd::press(&dev()?, &button)),
         Command::Install { path } => say(cmd::install(&dev()?, &path)),
         Command::Uninstall { bundle_id } => say(cmd::uninstall(&dev()?, &bundle_id)),
-        Command::Launch { bundle_id, logs } => say(cmd::launch(&dev()?, &bundle_id, logs)),
+        Command::Launch {
+            bundle_id,
+            logs,
+            env,
+            args,
+        } => say(cmd::launch(&dev()?, &bundle_id, logs, &env, &args)),
         Command::Logs {
             bundle_id,
             lines,
@@ -344,11 +355,40 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::Cli;
-    use clap::CommandFactory;
+    use super::{Cli, Command};
+    use clap::{CommandFactory, Parser};
 
     #[test]
     fn cli_is_well_formed() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn launch_parses_env_and_trailing_args() {
+        let cli = Cli::parse_from([
+            "agent-sim",
+            "launch",
+            "com.example.app",
+            "--logs",
+            "--env",
+            "FOO=bar",
+            "--",
+            "-mode",
+            "demo",
+        ]);
+        match cli.command {
+            Command::Launch {
+                bundle_id,
+                logs,
+                env,
+                args,
+            } => {
+                assert_eq!(bundle_id, "com.example.app");
+                assert!(logs);
+                assert_eq!(env, vec!["FOO=bar"]);
+                assert_eq!(args, vec!["-mode", "demo"]);
+            }
+            _ => panic!("expected Launch"),
+        }
     }
 }
