@@ -21,6 +21,19 @@ pub fn data_dir() -> Result<PathBuf> {
     Ok(PathBuf::from(home).join(".local/share/x86sim"))
 }
 
+/// x86Sim's cache directory (Darling prefixes, logs): `$X86SIM_CACHE`, else `$XDG_CACHE_HOME/x86sim`, else
+/// `~/.cache/x86sim`, as x86Sim's AppRun picks it.
+pub fn cache_dir() -> Result<PathBuf> {
+    if let Some(d) = std::env::var_os("X86SIM_CACHE") {
+        return Ok(PathBuf::from(d));
+    }
+    if let Some(d) = std::env::var_os("XDG_CACHE_HOME") {
+        return Ok(PathBuf::from(d).join("x86sim"));
+    }
+    let home = std::env::var_os("HOME").context("HOME is not set")?;
+    Ok(PathBuf::from(home).join(".cache/x86sim"))
+}
+
 impl Device {
     /// `name` is a device name (`a` for `var/device-a64-a`, empty for x86Sim's default `var/device-a64`) or a path
     /// to a device directory.

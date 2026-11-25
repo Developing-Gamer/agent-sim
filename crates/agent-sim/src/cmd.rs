@@ -789,12 +789,8 @@ pub fn logs(dev: &Device, bundle: &str, lines: usize, matching: Option<&str>) ->
         .to_string_lossy()
         .into_owned();
     let short = name.strip_prefix("device-a64-").unwrap_or(&name);
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default();
-    let run = home.join(format!(
-        ".cache/x86sim/a64prefix-{short}/private/var/tmp/x86sim-a64"
-    ));
+    let run =
+        crate::device::cache_dir()?.join(format!("a64prefix-{short}/private/var/tmp/x86sim-a64"));
     if let Some(p) = newest(&run, &format!("{exe}.")) {
         let report = tail(&p, lines.min(60), None);
         let crashed = report.contains("guest exception") || report.contains("killing pid");

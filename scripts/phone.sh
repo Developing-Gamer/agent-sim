@@ -25,7 +25,7 @@
 #   X86SIM_IO_MAX=0           x86Sim's desktop throttle off: by default it runs the phone in a scope with disk reads
 #                             and writes capped at 40 MB/s and low CPU and IO weight, which on a server only slows
 #                             cold boots (and moves the phone out of this unit's accounting)
-# The frame ring lives under ~/.cache rather than /run/user: x86Sim's container does not always see the host's
+# The frame ring lives under x86Sim's cache directory (~/.cache/x86sim) rather than /run/user: x86Sim's container does not always see the host's
 # /run/user (no login session on a server), and then no frame ever reaches the host.
 set -Eeuo pipefail
 
@@ -42,9 +42,11 @@ if [ -z "${X86SIM_VERSION:-}" ]; then
 	fi
 fi
 X=$ROOT/x86sim-$X86SIM_VERSION/AppRun
-DATA=${XDG_DATA_HOME:-$HOME/.local/share}/x86sim
+# x86Sim's data and cache directories, as its AppRun picks them
+DATA=${X86SIM_DATA:-${XDG_DATA_HOME:-$HOME/.local/share}/x86sim}
+CACHE=${X86SIM_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/x86sim}
 DIR=$DATA/var/device-a64-$DEVICE
-RINGS=$HOME/.cache/x86sim/rings
+RINGS=$CACHE/rings
 RING=$RINGS/x86sim-a64-$DEVICE-simfb.ring
 UNIT=agent-sim-phone-$DEVICE
 
@@ -62,7 +64,7 @@ stop_phone() {
 # Per-program environment that x86Sim applies as each phone process starts (launchd jobs and XPC services do not get
 # the boot environment). WebKit's web content process reserves a 16 GB "Gigacage" at startup; under x86Sim that
 # reservation fails and every page crashes ("Could not allocate gigacage memory"). WebKit's own switch turns it off.
-PENV=${X86SIM_SCRATCH:-$HOME/.cache/x86sim}/a64-penv
+PENV=$CACHE/a64-penv
 LEAN_JOBS="com.apple.sleepd com.apple.assetsd com.apple.passd com.apple.financed com.apple.nanoregistryd
 	com.apple.accountsd com.apple.amsaccountsd com.apple.mediaremoted com.apple.sharingd com.apple.medialibraryd"
 # AGENT_SIM_SERVICES=apps (the default): also every service x86Sim's standard list has that only starts when asked
@@ -118,7 +120,7 @@ ensure_penv() {
 # user-namespace mode is owned by the user, and system-mode Darling refuses it ("workdir/private must be a directory
 # that only root can use"). A prefix from the other mode is removed; Darling makes a new one.
 fix_prefix() {
-	local pre=$HOME/.cache/x86sim/a64prefix-$DEVICE
+	local pre=$CACHE/a64prefix-$DEVICE
 	[ -e /opt/x86sim/darling/.x86sim-complete ] || return 0
 	[ -d "$pre.workdir/private" ] && [ "$(stat -c %u "$pre.workdir/private")" != 0 ] || return 0
 	echo "phone.sh: $DEVICE's Darling prefix is from x86Sim's user-namespace mode; making a new one" >&2

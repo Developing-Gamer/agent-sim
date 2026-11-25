@@ -15,7 +15,7 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PATCHES=$HERE/../patches/x86sim
 SRC=$ROOT/src/x86sim-$X86SIM_VERSION
 BUILD=$ROOT/build/arm64jit-$X86SIM_VERSION
-DATA=${XDG_DATA_HOME:-$HOME/.local/share}/x86sim
+DATA=${X86SIM_DATA:-${XDG_DATA_HOME:-$HOME/.local/share}/x86sim}
 # the unpacked AppImage, the copy x86Sim installs under its data directory on first run (userns mode), and the
 # root-owned system-mode install under /opt/x86sim (the one phones load when it exists)
 mapfile -t LIBS < <(find "$ROOT/x86sim-$X86SIM_VERSION" "$DATA"/app/"$X86SIM_VERSION"* -name libarm64jit.so \
