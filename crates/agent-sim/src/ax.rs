@@ -264,6 +264,11 @@ fn read_web(
     (out, live)
 }
 
+fn on_screen(frame: [f64; 4], bounds: (f64, f64)) -> bool {
+    let (cx, cy) = (frame[0] + frame[2] / 2.0, frame[1] + frame[3] / 2.0);
+    cx >= 0.0 && cy >= 0.0 && cx <= bounds.0 && cy <= bounds.1
+}
+
 pub fn snapshot(dev: &Device) -> Result<Snapshot> {
     let dir = phone::data_dir(dev).join("tmp/agent-sim");
     std::fs::create_dir_all(&dir)?;
@@ -382,14 +387,15 @@ pub fn snapshot(dev: &Device) -> Result<Snapshot> {
     parts.extend(sb_windows(&|w| w.class.contains("StatusBar")));
 
     let screen = phone::Screen::of(dev)?;
+    let orient = crate::cmd::current_orientation(dev);
+    let bounds = crate::cmd::upright_bounds(screen, &orient);
     let mut elements = Vec::new();
     for (owner, w) in parts {
         let home =
             owner == "SpringBoard" && (w.class.contains("HomeScreen") || w.class.contains("Dock"));
         for e in &w.elements {
             // off screen (a page scrolled away, a view sliding out): not something to read or tap
-            let (cx, cy) = (e.frame[0] + e.frame[2] / 2.0, e.frame[1] + e.frame[3] / 2.0);
-            if cx < 0.0 || cy < 0.0 || cx > screen.width || cy > screen.height {
+            if !on_screen(e.frame, bounds) {
                 continue;
             }
             let mut states = Vec::new();
@@ -631,5 +637,21 @@ mod tests {
         assert_eq!(format(&s), "lock screen\n");
         s.locked = false;
         assert_eq!(format(&s), "home screen\n");
+    }
+
+    #[test]
+    fn on_screen_uses_upright_bounds() {
+        let scr = phone::Screen {
+            width: 402.0,
+            height: 874.0,
+        };
+        let landscape = crate::cmd::upright_bounds(scr, "landscapeLeft");
+        // Right-half toolbar button in landscape (x=700, y=30) must not be dropped by portrait width 402
+        assert!(on_screen([680.0, 10.0, 40.0, 40.0], landscape));
+        assert!(!on_screen(
+            [680.0, 10.0, 40.0, 40.0],
+            (scr.width, scr.height)
+        ));
+        assert!(!on_screen([100.0, 450.0, 40.0, 40.0], landscape));
     }
 }

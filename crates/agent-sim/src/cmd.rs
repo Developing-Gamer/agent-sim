@@ -66,7 +66,7 @@ pub const ORIENTATIONS: &[&str] = &[
 ];
 
 /// How the phone is turned (x86Sim's orientation): portrait, landscapeLeft, landscapeRight, portraitUpsideDown.
-fn current_orientation(dev: &Device) -> String {
+pub(crate) fn current_orientation(dev: &Device) -> String {
     phone::x86sim_ok(dev, &["orientation"])
         .map(|o| o.trim().to_string())
         .unwrap_or_else(|_| "portrait".into())
@@ -130,7 +130,7 @@ fn upright_to_panel(scr: Screen, x: f64, y: f64, orientation: &str) -> (f64, f64
     }
 }
 
-fn upright_bounds(scr: Screen, orientation: &str) -> (f64, f64) {
+pub(crate) fn upright_bounds(scr: Screen, orientation: &str) -> (f64, f64) {
     match orientation {
         "landscapeLeft" | "landscapeRight" => (scr.height, scr.width),
         _ => (scr.width, scr.height),
@@ -256,7 +256,8 @@ fn hid(dev: &Device) -> Hid {
 pub fn tap(dev: &Device, target: &[String], hold_ms: u64) -> Result<String> {
     let (x, y, what, role) = point_role(dev, target)?;
     let scr = Screen::of(dev)?;
-    let (u, v) = scr.unit(x, y);
+    let orient = current_orientation(dev);
+    let (u, v) = upright_to_panel(scr, x, y, &orient);
     let mut h = hid(dev);
     h.touch("down", u, v)?;
     std::thread::sleep(Duration::from_millis(hold_ms.max(80)));
@@ -274,19 +275,20 @@ fn drag_progress(t: f64, ease_out: bool) -> f64 {
 
 fn drag(dev: &Device, from: (f64, f64), to: (f64, f64), ms: u64, hold_ms: u64) -> Result<()> {
     let scr = Screen::of(dev)?;
+    let orient = current_orientation(dev);
     let mut h = hid(dev);
     let steps = (ms / 16).clamp(4, 120);
     let ease_out = hold_ms > 0;
-    let (a, b) = scr.unit(from.0, from.1);
+    let (a, b) = upright_to_panel(scr, from.0, from.1, &orient);
     h.touch("down", a, b)?;
     for i in 1..=steps {
         let t = drag_progress(i as f64 / steps as f64, ease_out);
         let (x, y) = (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t);
-        let (u, v) = scr.unit(x, y);
+        let (u, v) = upright_to_panel(scr, x, y, &orient);
         std::thread::sleep(Duration::from_millis(ms / steps));
         h.touch("move", u, v)?;
     }
-    let (u, v) = scr.unit(to.0, to.1);
+    let (u, v) = upright_to_panel(scr, to.0, to.1, &orient);
     if hold_ms > 0 {
         // Hold stationary at the endpoint while continuing to send move samples so UIKit and Flutter
         // velocity trackers see near-zero release velocity and do not start inertial deceleration.
@@ -361,19 +363,26 @@ pub fn pinch(dev: &Device, cx: f64, cy: f64, r1: f64, r2: f64, ms: u64) -> Resul
     ))
 }
 
+fn scroll_segment(bounds: (f64, f64), dir: &str, amount: f64) -> Result<((f64, f64), (f64, f64))> {
+    let (w, h) = bounds;
+    let (cx, cy) = (w / 2.0, h / 2.0);
+    let frac = 0.35 * amount.clamp(0.1, 2.0);
+    let (dx, dy) = (w * frac, h * frac);
+    Ok(match dir {
+        "down" => ((cx, cy + dy / 2.0), (cx, cy - dy / 2.0)),
+        "up" => ((cx, cy - dy / 2.0), (cx, cy + dy / 2.0)),
+        "left" => ((cx - dx / 2.0, cy), (cx + dx / 2.0, cy)),
+        "right" => ((cx + dx / 2.0, cy), (cx - dx / 2.0, cy)),
+        _ => bail!("scroll up, down, left or right"),
+    })
+}
+
 /// Scrolls the content: `down` shows what is below (the finger moves up), as on a phone.
 /// Slows into the endpoint and holds briefly before lifting so the next tap is not eaten by scroll deceleration.
 pub fn scroll(dev: &Device, dir: &str, amount: f64) -> Result<String> {
     let scr = Screen::of(dev)?;
-    let (cx, cy) = (scr.width / 2.0, scr.height / 2.0);
-    let d = scr.height * 0.35 * amount.clamp(0.1, 2.0);
-    let (from, to) = match dir {
-        "down" => ((cx, cy + d / 2.0), (cx, cy - d / 2.0)),
-        "up" => ((cx, cy - d / 2.0), (cx, cy + d / 2.0)),
-        "left" => ((cx - d / 2.0, cy), (cx + d / 2.0, cy)),
-        "right" => ((cx + d / 2.0, cy), (cx - d / 2.0, cy)),
-        _ => bail!("scroll up, down, left or right"),
-    };
+    let orient = current_orientation(dev);
+    let (from, to) = scroll_segment(upright_bounds(scr, &orient), dir, amount)?;
     drag(dev, from, to, 300, 120)?;
     Ok(format!("scrolled {dir}"))
 }
@@ -1171,6 +1180,16 @@ pub fn erase(name: &str) -> Result<()> {
     phone::script("setup-vm.sh", &[], &[("DEVICE", name)])
 }
 
+/// ffmpeg video filter turning raw panel frames upright to match `rotate()`.
+fn record_vf(orientation: &str) -> Option<&'static str> {
+    match orientation {
+        "landscapeLeft" => Some("transpose=2"),
+        "landscapeRight" => Some("transpose=1"),
+        "portraitUpsideDown" => Some("hflip,vflip"),
+        _ => None,
+    }
+}
+
 /// Records the screen to an MP4 (H.264) with ffmpeg, as `simctl io recordVideo`: `secs` long, at `fps`.
 pub fn record(dev: &Device, out: &Path, secs: f64, fps: u32) -> Result<String> {
     use std::io::Write;
@@ -1180,29 +1199,34 @@ pub fn record(dev: &Device, out: &Path, secs: f64, fps: u32) -> Result<String> {
         .latest()
         .context("no frame yet: is the phone running?")?;
     let (w, h) = (first.width, first.height);
-    let mut ff = Command::new("ffmpeg")
+    let orient = current_orientation(dev);
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args([
+        "-loglevel",
+        "error",
+        "-y",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "bgra",
+        "-s",
+    ])
+    .arg(format!("{w}x{h}"))
+    .args(["-r", &fps.to_string(), "-i", "-"]);
+    if let Some(vf) = record_vf(&orient) {
+        cmd.args(["-vf", vf]);
+    }
+    let mut ff = cmd
         .args([
-            "-loglevel",
-            "error",
-            "-y",
-            "-f",
-            "rawvideo",
-            "-pix_fmt",
-            "bgra",
-            "-s",
-        ])
-        .arg(format!("{w}x{h}"))
-        .args([
-            "-r",
-            &fps.to_string(),
-            "-i",
-            "-",
             "-c:v",
             "libx264",
             "-preset",
             "veryfast",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
         ])
-        .args(["-pix_fmt", "yuv420p", "-movflags", "+faststart"])
         .arg(out)
         .stdin(Stdio::piped())
         .spawn()
@@ -1235,9 +1259,9 @@ pub fn record(dev: &Device, out: &Path, secs: f64, fps: u32) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        RELAUNCH_SETTLE, TypeStep, clipboard, drag_progress, launch_args, parse_lat_lon, rotate,
-        settle_left, type_steps, upright_bounds, upright_to_panel, validate_pinch,
-        validate_privacy, validate_push_payload,
+        RELAUNCH_SETTLE, TypeStep, clipboard, drag_progress, launch_args, parse_lat_lon, record_vf,
+        rotate, scroll_segment, settle_left, type_steps, upright_bounds, upright_to_panel,
+        validate_pinch, validate_privacy, validate_push_payload,
     };
     use crate::device::Device;
     use std::path::PathBuf;
@@ -1436,5 +1460,33 @@ mod tests {
             rotate(img, 2, 1, "portraitUpsideDown"),
             (vec![0, 255, 0, 255, 0, 0], 2, 1)
         );
+    }
+
+    #[test]
+    fn record_vf_matches_orientation() {
+        assert_eq!(record_vf("portrait"), None);
+        assert_eq!(record_vf("unknown"), None);
+        assert_eq!(record_vf("landscapeLeft"), Some("transpose=2"));
+        assert_eq!(record_vf("landscapeRight"), Some("transpose=1"));
+        assert_eq!(record_vf("portraitUpsideDown"), Some("hflip,vflip"));
+    }
+
+    #[test]
+    fn scroll_segment_uses_upright_bounds() {
+        let scr = Screen {
+            width: 400.0,
+            height: 800.0,
+        };
+        let landscape = upright_bounds(scr, "landscapeLeft");
+        assert_eq!(landscape, (800.0, 400.0));
+        // Vertical scroll in landscape centers at x=400 and stays within y in 0..400
+        let (from, to) = scroll_segment(landscape, "down", 1.0).unwrap();
+        assert_eq!(from, (400.0, 270.0));
+        assert_eq!(to, (400.0, 130.0));
+        // Horizontal scroll uses width rather than height, so max amount stays on screen in portrait too
+        let (from, to) = scroll_segment((400.0, 800.0), "right", 2.0).unwrap();
+        assert!(from.0 > 0.0 && from.0 < 400.0);
+        assert!(to.0 > 0.0 && to.0 < 400.0);
+        assert!(scroll_segment(landscape, "sideways", 1.0).is_err());
     }
 }
