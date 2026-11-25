@@ -210,17 +210,38 @@ pub fn snapshot(dev: &Device, json: bool) -> Result<String> {
     })
 }
 
+/// Effective UI orientation for mapping input coordinates: matches the physical orientation when the
+/// foreground app rotates with the phone, and stays `"portrait"` for portrait-locked apps (and the
+/// iPhone Home Screen) even while the device is rotated sideways.
+fn input_orientation(dev: &Device) -> String {
+    let device = current_orientation(dev);
+    if matches!(device.as_str(), "portrait" | "unknown" | "") {
+        return "portrait".into();
+    }
+    ax::snapshot(dev)
+        .ok()
+        .and_then(|s| s.orientation)
+        .unwrap_or(device)
+}
+
 /// Where a tap target is: `@e3`, `x y` in screen points, or text an element's label, value or id contains.
-/// Like point, with the element's role (empty for a bare point).
-fn point_role(dev: &Device, target: &[String]) -> Result<(f64, f64, String, String)> {
+/// Returns `(x, y, description, role, optional snapshot orientation)`.
+fn point_role(
+    dev: &Device,
+    target: &[String],
+) -> Result<(f64, f64, String, String, Option<String>)> {
     match target {
-        [x, y] if x.parse::<f64>().is_ok() && y.parse::<f64>().is_ok() => {
-            Ok((x.parse()?, y.parse()?, format!("({x},{y})"), String::new()))
-        }
+        [x, y] if x.parse::<f64>().is_ok() && y.parse::<f64>().is_ok() => Ok((
+            x.parse()?,
+            y.parse()?,
+            format!("({x},{y})"),
+            String::new(),
+            None,
+        )),
         [r] if r.starts_with('@') => {
-            let e = ax::resolve(dev, r)?;
+            let (e, orient) = ax::resolve_with_orientation(dev, r)?;
             let (x, y) = e.center();
-            Ok((x, y, describe(&e), e.role.clone()))
+            Ok((x, y, describe(&e), e.role.clone(), orient))
         }
         [] => bail!("tap what? an element (@e3), a point (x y) or text"),
         words => {
@@ -231,7 +252,7 @@ fn point_role(dev: &Device, target: &[String]) -> Result<(f64, f64, String, Stri
                 let s = ax::snapshot(dev)?;
                 if let Some(e) = ax::find(&s, &text) {
                     let (x, y) = e.center();
-                    return Ok((x, y, describe(e), e.role.clone()));
+                    return Ok((x, y, describe(e), e.role.clone(), s.orientation));
                 }
                 if start.elapsed() > Duration::from_secs(3) {
                     bail!("nothing on screen matches \"{text}\"");
@@ -254,9 +275,9 @@ fn hid(dev: &Device) -> Hid {
 }
 
 pub fn tap(dev: &Device, target: &[String], hold_ms: u64) -> Result<String> {
-    let (x, y, what, role) = point_role(dev, target)?;
+    let (x, y, what, role, orient) = point_role(dev, target)?;
     let scr = Screen::of(dev)?;
-    let orient = current_orientation(dev);
+    let orient = orient.unwrap_or_else(|| input_orientation(dev));
     let (u, v) = upright_to_panel(scr, x, y, &orient);
     let mut h = hid(dev);
     h.touch("down", u, v)?;
@@ -273,22 +294,28 @@ fn drag_progress(t: f64, ease_out: bool) -> f64 {
     if ease_out { 1.0 - (1.0 - t).powi(3) } else { t }
 }
 
-fn drag(dev: &Device, from: (f64, f64), to: (f64, f64), ms: u64, hold_ms: u64) -> Result<()> {
+fn drag_oriented(
+    dev: &Device,
+    from: (f64, f64),
+    to: (f64, f64),
+    ms: u64,
+    hold_ms: u64,
+    orient: &str,
+) -> Result<()> {
     let scr = Screen::of(dev)?;
-    let orient = current_orientation(dev);
     let mut h = hid(dev);
     let steps = (ms / 16).clamp(4, 120);
     let ease_out = hold_ms > 0;
-    let (a, b) = upright_to_panel(scr, from.0, from.1, &orient);
+    let (a, b) = upright_to_panel(scr, from.0, from.1, orient);
     h.touch("down", a, b)?;
     for i in 1..=steps {
         let t = drag_progress(i as f64 / steps as f64, ease_out);
         let (x, y) = (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t);
-        let (u, v) = upright_to_panel(scr, x, y, &orient);
+        let (u, v) = upright_to_panel(scr, x, y, orient);
         std::thread::sleep(Duration::from_millis(ms / steps));
         h.touch("move", u, v)?;
     }
-    let (u, v) = upright_to_panel(scr, to.0, to.1, &orient);
+    let (u, v) = upright_to_panel(scr, to.0, to.1, orient);
     if hold_ms > 0 {
         // Hold stationary at the endpoint while continuing to send move samples so UIKit and Flutter
         // velocity trackers see near-zero release velocity and do not start inertial deceleration.
@@ -303,7 +330,8 @@ fn drag(dev: &Device, from: (f64, f64), to: (f64, f64), ms: u64, hold_ms: u64) -
 }
 
 pub fn swipe(dev: &Device, from: (f64, f64), to: (f64, f64), ms: u64) -> Result<String> {
-    drag(dev, from, to, ms, 0)?;
+    let orient = input_orientation(dev);
+    drag_oriented(dev, from, to, ms, 0, &orient)?;
     Ok(format!(
         "swiped ({:.0},{:.0}) to ({:.0},{:.0})",
         from.0, from.1, to.0, to.1
@@ -336,7 +364,7 @@ fn validate_pinch(cx: f64, cy: f64, r1: f64, r2: f64, bounds: (f64, f64)) -> Res
 /// (`r2 > r1` zooms in, `r2 < r1` zooms out).
 pub fn pinch(dev: &Device, cx: f64, cy: f64, r1: f64, r2: f64, ms: u64) -> Result<String> {
     let scr = Screen::of(dev)?;
-    let orient = current_orientation(dev);
+    let orient = input_orientation(dev);
     validate_pinch(cx, cy, r1, r2, upright_bounds(scr, &orient))?;
     let mut h = hid(dev);
     let steps = (ms / 16).clamp(4, 120);
@@ -381,9 +409,9 @@ fn scroll_segment(bounds: (f64, f64), dir: &str, amount: f64) -> Result<((f64, f
 /// Slows into the endpoint and holds briefly before lifting so the next tap is not eaten by scroll deceleration.
 pub fn scroll(dev: &Device, dir: &str, amount: f64) -> Result<String> {
     let scr = Screen::of(dev)?;
-    let orient = current_orientation(dev);
+    let orient = input_orientation(dev);
     let (from, to) = scroll_segment(upright_bounds(scr, &orient), dir, amount)?;
-    drag(dev, from, to, 300, 120)?;
+    drag_oriented(dev, from, to, 300, 120, &orient)?;
     Ok(format!("scrolled {dir}"))
 }
 
