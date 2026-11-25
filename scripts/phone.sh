@@ -188,6 +188,13 @@ start)
 		X86SIM_* | A64_* | LP_* | VK_* | MESA_* | SIMFB_* | DSERVER_*) passthrough+=(--setenv="$name") ;;
 		esac
 	done < <(env)
+	# x86Sim's desktop app shows a phone from /run/user/<uid>/<ring name> only. Where the app is in the app menu (a
+	# desktop: setup-vm.sh, scripts/desktop-entry.sh), boot-a64.sh links that path to this ring, so the app shows a phone
+	# agent-sim started. Elsewhere (servers, headless VMs) the ring stays only where it is.
+	if [ -z "${SIMFB_RING_LINUX+x}" ] && [ -f "${XDG_DATA_HOME:-$HOME/.local/share}/applications/x86sim.desktop" ] &&
+		[ -d "/run/user/$UID" ] && [ -w "/run/user/$UID" ]; then
+		passthrough+=(--setenv=SIMFB_RING_LINUX="/run/user/$UID/${RING##*/}")
+	fi
 	# let the kernel merge this phone's memory pages with identical ones of other phones (KSM; takes effect while
 	# /sys/kernel/mm/ksm/run is 1, which pool.sh sets for two or more phones; AGENT_SIM_KSM=0 opts out)
 	# Needs Linux 6.4+ (per-process merging); on older kernels systemd refuses to start the unit, so probe first.
