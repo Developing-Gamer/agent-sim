@@ -61,6 +61,13 @@ stop_phone() {
 	systemctl --user reset-failed "$UNIT" 2>/dev/null || true
 }
 
+# Whether x86Sim's own settings file (x86sim.env, or $X86SIM_CONFIG) sets KEY. x86Sim reads that file when the phone
+# boots and lets the environment override it, so agent-sim's default for KEY is passed only when the file is silent.
+x86sim_config_sets() {
+	local cfg=${X86SIM_CONFIG:-$DATA/x86sim.env}
+	[ -f "$cfg" ] && grep -Eq "^[[:space:]]*(export[[:space:]]+)?$1=" "$cfg"
+}
+
 # Per-program environment that x86Sim applies as each phone process starts (launchd jobs and XPC services do not get
 # the boot environment). WebKit's web content process reserves a 16 GB "Gigacage" at startup; under x86Sim that
 # reservation fails and every page crashes ("Could not allocate gigacage memory"). WebKit's own switch turns it off.
@@ -189,14 +196,20 @@ start)
 		passthrough+=(--property=MemoryKSM=yes)
 	fi
 	# Default to lavapipe on headless VMs when it is installed; otherwise let the Vulkan loader pick a host GPU ICD.
+	# A driver chosen in x86sim.env (a GPU on a desktop) is x86Sim's to apply.
 	if [ -n "${VK_ICD_FILENAMES:-}" ]; then
 		passthrough+=(--setenv=VK_ICD_FILENAMES="$VK_ICD_FILENAMES")
-	elif [ -f /usr/share/vulkan/icd.d/lvp_icd.json ]; then
+	elif ! x86sim_config_sets VK_ICD_FILENAMES && [ -f /usr/share/vulkan/icd.d/lvp_icd.json ]; then
 		passthrough+=(--setenv=VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json)
+	fi
+	# Which programs draw through Metal (on Vulkan): agent-sim's measured default unless set here or in x86sim.env
+	if [ -n "${X86SIM_METAL:-}" ]; then
+		passthrough+=(--setenv=X86SIM_METAL="$X86SIM_METAL")
+	elif ! x86sim_config_sets X86SIM_METAL; then
+		passthrough+=(--setenv=X86SIM_METAL=backboardd,iconservicesagent)
 	fi
 	systemd-run --user --quiet --unit="$UNIT" --collect "${passthrough[@]}" \
 		--setenv=SIMFB_RING="/Volumes/SystemRoot$RING" \
-		--setenv=X86SIM_METAL="${X86SIM_METAL:-backboardd,iconservicesagent}" \
 		--setenv=LP_NUM_THREADS="${LP_NUM_THREADS:-$(n=$(($(nproc) - 2)); echo $((n < 2 ? 2 : n > 6 ? 6 : n)))}" \
 		--setenv=A64_JOBS="${A64_JOBS:-slim}" \
 		--setenv=X86SIM_IO_MAX="${X86SIM_IO_MAX:-0}" \
