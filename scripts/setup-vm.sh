@@ -27,7 +27,7 @@ fast) MODEL=${MODEL:-"iPhone 17 Pro (at 2x)"} ;;
 esac
 ROOT=${AGENT_SIM_HOME:-$HOME/.local/share/agent-sim}
 X=$ROOT/x86sim-$X86SIM_VERSION/AppRun
-DATA=${XDG_DATA_HOME:-$HOME/.local/share}/x86sim
+DATA=${X86SIM_DATA:-${XDG_DATA_HOME:-$HOME/.local/share}/x86sim}
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 log() { printf '\n==> %s\n' "$*"; }
@@ -128,7 +128,7 @@ if [ "$(cat /opt/x86sim/darling/.x86sim-complete 2>/dev/null)" != "$(cat "$S/DAR
 	log "Installing Darling for x86Sim's system mode (/opt/x86sim, root-owned)"
 	sudo sh "$S/install-helper.sh" install "$S/darling" "$(cat "$S/DARLING_ID")"
 	# a holder left from userns mode would keep being used by phones started before
-	for f in "$HOME"/.cache/x86sim/userns-*.pid; do [ -f "$f" ] && kill "$(cat "$f")" 2>/dev/null; rm -f "$f"; done
+	for f in "${X86SIM_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/x86sim}"/userns-*.pid; do [ -f "$f" ] && kill "$(cat "$f")" 2>/dev/null; rm -f "$f"; done
 fi
 
 fetched=$DATA/runtimes/.agent-sim-fetched-$RUNTIME_BUILD

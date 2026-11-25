@@ -345,10 +345,10 @@ fn short_name(dev: &Device) -> String {
 
 /// Whether the device's Darling server runs (`darlingserver <prefix> ...`).
 fn server_running(dev: &Device) -> bool {
-    let Some(home) = std::env::var_os("HOME") else {
+    let Ok(cache) = crate::device::cache_dir() else {
         return false;
     };
-    let prefix = Path::new(&home).join(format!(".cache/x86sim/a64prefix-{}", short_name(dev)));
+    let prefix = cache.join(format!("a64prefix-{}", short_name(dev)));
     let Ok(dir) = std::fs::read_dir("/proc") else {
         return false;
     };

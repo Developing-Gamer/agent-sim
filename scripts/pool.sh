@@ -14,7 +14,7 @@
 set -Eeuo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-DATA=${XDG_DATA_HOME:-$HOME/.local/share}/x86sim
+DATA=${X86SIM_DATA:-${XDG_DATA_HOME:-$HOME/.local/share}/x86sim}
 HELD=${XDG_CACHE_HOME:-$HOME/.cache}/agent-sim/pool
 export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
 export DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}
