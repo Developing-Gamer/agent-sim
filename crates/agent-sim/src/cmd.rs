@@ -862,15 +862,17 @@ pub fn appearance(dev: &Device, mode: &str) -> Result<String> {
 fn springboard(dev: &Device, req: &str) -> Result<String> {
     let dir = phone::data_dir(dev).join("tmp/agent-sim");
     std::fs::create_dir_all(&dir)?;
+    let cmd_path = dir.join("cmd.txt");
     let answer = dir.join("answer.txt");
     let _ = std::fs::remove_file(&answer);
-    std::fs::write(dir.join("cmd.txt"), req)?;
+    std::fs::write(&cmd_path, req)?;
     let sb = phone::process_ids(dev, |_, exe| exe == "SpringBoard")?;
     let Some(&(linux, inner)) = sb.first() else {
         return Err(phone::not_running(dev));
     };
     phone::ask_hook(&dir, linux, inner).context("SpringBoard is still starting")?;
     let start = Instant::now();
+    let mut last_signal = start;
     loop {
         if let Ok(t) = std::fs::read_to_string(&answer) {
             return Ok(t);
@@ -878,8 +880,14 @@ fn springboard(dev: &Device, req: &str) -> Result<String> {
         // the first pasteboard read after a boot waits for the pasteboard service to start
         if start.elapsed() > Duration::from_secs(15) {
             // not left for the next signal to act on
-            let _ = std::fs::remove_file(dir.join("cmd.txt"));
+            let _ = std::fs::remove_file(&cmd_path);
             bail!("no answer from SpringBoard (are agent-sim's hooks loaded?)");
+        }
+        // If SIGUSR2 landed while a previous dump() was still finishing on SpringBoard's main queue,
+        // cmd.txt remains unconsumed; re-signal until the hook unlinks it.
+        if last_signal.elapsed() >= Duration::from_millis(500) && cmd_path.exists() {
+            let _ = phone::ask_hook(&dir, linux, inner);
+            last_signal = Instant::now();
         }
         std::thread::sleep(Duration::from_millis(25));
     }
@@ -943,7 +951,10 @@ pub fn status_bar(
     clear: bool,
 ) -> Result<String> {
     if clear {
-        springboard(dev, "statusbar-clear")?;
+        let r = springboard(dev, "statusbar-clear")?;
+        if r != "ok" {
+            bail!("status bar: {r}");
+        }
         return Ok("status bar back to normal".into());
     }
     let mut req = String::from("statusbar\n");

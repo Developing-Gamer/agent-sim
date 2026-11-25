@@ -353,11 +353,11 @@ static const char *status_bar(char *req) {
 	SEND(void, g_status_publisher, "setData:", id)(g_status_publisher, SEL_("setData:"), ov);
 	return "ok";
 }
-static void request(void) {
+static bool request(void) {
 	char path[1200];
 	snprintf(path, sizeof path, "%s/cmd.txt", dir);
 	FILE *f = fopen(path, "r");
-	if (!f) return;
+	if (!f) return false;
 	static char req[65536];
 	size_t n = fread(req, 1, sizeof req - 1, f);
 	fclose(f);
@@ -366,18 +366,18 @@ static void request(void) {
 	if (!strncmp(req, "statusbar", 9)) {
 		const char *r = status_bar(req);
 		write_file("answer.txt", r, strlen(r));
-		return;
+		return true;
 	}
 	if (!strncmp(req, "front", 5)) {
 		write_front();
 		write_file("answer.txt", "ok", 2);
-		return;
+		return true;
 	}
 	if (!strncmp(req, "pasteboard-set\n", 15)) {
 		id pb = SEND(id, (id)objc_getClass("UIPasteboard"), "generalPasteboard")((id)objc_getClass("UIPasteboard"), SEL_("generalPasteboard"));
 		if (!pb) {
 			write_file("answer.txt", "no-pasteboard", 13);
-			return;
+			return true;
 		}
 		SEND(void, pb, "setString:", id)(pb, SEL_("setString:"), nsstring(req + 15));
 		write_file("answer.txt", "ok", 2);
@@ -385,7 +385,10 @@ static void request(void) {
 		// Reading generalPasteboard.string synchronously on SpringBoard's main queue deadlocks SpringBoard
 		// when another app owns the pasteboard (iOS paste-permission UI blocks on the same main queue).
 		write_file("answer.txt", "unsupported", 11);
+	} else {
+		write_file("answer.txt", "unknown", 7);
 	}
+	return true;
 }
 
 // WebKit's WebContent process draws web views for the apps; its accessibility tree hangs off one page object per web
@@ -526,8 +529,9 @@ static bool app_request(void) {
 }
 
 static void dump(void *ctx) {
-	if (!strcmp(getprogname(), "SpringBoard")) request();
-	else if (!is_webcontent() && app_request()) return;
+	if (!strcmp(getprogname(), "SpringBoard")) {
+		if (request()) return;
+	} else if (!is_webcontent() && app_request()) return;
 	len = 0;
 	emitted = 0;
 	if (is_webcontent()) {
