@@ -539,6 +539,22 @@ static bool app_request(void) {
 	return true;
 }
 
+// Maps UIWindowScene.interfaceOrientation to x86Sim's orientation names.
+// UIKit defines UIInterfaceOrientationLandscapeRight == UIDeviceOrientationLandscapeLeft (3) and
+// UIInterfaceOrientationLandscapeLeft == UIDeviceOrientationLandscapeRight (4), so the numeric
+// values 1..4 correspond 1:1 with portrait, portraitUpsideDown, landscapeLeft, landscapeRight.
+static const char *window_orientation(id win) {
+	id scene = get(win, "windowScene");
+	long o = scene ? getl(scene, "interfaceOrientation") : 0;
+	switch (o) {
+	case 1: return "portrait";
+	case 2: return "portraitUpsideDown";
+	case 3: return "landscapeLeft";
+	case 4: return "landscapeRight";
+	default: return NULL;
+	}
+}
+
 static void dump(void *ctx) {
 	if (!strcmp(getprogname(), "SpringBoard")) {
 		if (request()) return;
@@ -562,13 +578,17 @@ static void dump(void *ctx) {
 	puts_(head);
 	id wins = app_windows(app);
 	int w = 0;
+	const char *orient = NULL;
 	g_nwebviews = 0;
 	for (unsigned long i = 0, n = count(wins); i < n; i++) {
 		id win = at(wins, i);
 		if (getb(win, "isHidden") || getd(win, "alpha") < 0.01) continue;
+		double level = getd(win, "windowLevel");
+		const char *wo = window_orientation(win);
+		if (wo && (!orient || (level >= 0 && level < 1000))) orient = wo;
 		if (w++) puts_(",");
 		puts_("{\"class\":"); putstr(object_getClassName(win));
-		putf(",\"level\":%.0f,\"elements\":[", getd(win, "windowLevel"), 0, 0, 0);
+		putf(",\"level\":%.0f,\"elements\":[", level, 0, 0, 0);
 		emitted = 0;
 		walk(win, 0);
 		puts_("]}");
@@ -593,7 +613,12 @@ static void dump(void *ctx) {
 		int n = snprintf(t, sizeof t, "%s%d", wp++ ? "," : "", wpid);
 		put(t, n);
 	}
-	puts_("]}\n");
+	puts_("]");
+	if (orient) {
+		puts_(",\"orientation\":");
+		putstr(orient);
+	}
+	puts_("}\n");
 	char name[64];
 	bool sb = !strcmp(getprogname(), "SpringBoard");
 	if (sb) snprintf(name, sizeof name, "ax-springboard.json");

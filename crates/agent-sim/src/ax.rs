@@ -59,6 +59,9 @@ pub struct Snapshot {
     /// the app in front did not answer (still starting, or busy): only SpringBoard's elements are listed
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub app_not_answering: bool,
+    /// effective UI orientation of the elements in this snapshot (portrait, landscapeLeft, landscapeRight, portraitUpsideDown)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orientation: Option<String>,
     pub elements: Vec<Element>,
 }
 
@@ -72,6 +75,9 @@ struct RawDump {
     /// guest PIDs of the WebContent processes backing the app's visible WKWebViews
     #[serde(default)]
     webview_pids: Vec<u32>,
+    /// interface orientation reported by the process's UIWindowScene
+    #[serde(default)]
+    orientation: Option<String>,
 }
 #[derive(Deserialize, Clone)]
 struct RawWindow {
@@ -291,6 +297,59 @@ fn read_web(
     (out, live)
 }
 
+fn on_screen(frame: [f64; 4], bounds: (f64, f64)) -> bool {
+    let (cx, cy) = (frame[0] + frame[2] / 2.0, frame[1] + frame[3] / 2.0);
+    cx >= 0.0 && cy >= 0.0 && cx <= bounds.0 && cy <= bounds.1
+}
+
+/// Effective interface orientation for bounds checks and input mapping.
+/// Prefers the foreground window scene's reported interface orientation so portrait-locked apps
+/// (and the iPhone Home Screen) keep portrait coordinates even when the physical device is turned
+/// sideways. Falls back to element-extent detection when talking to an older prebuilt hook.
+fn resolve_orientation(
+    reported: Option<&str>,
+    device_orient: &str,
+    screen: phone::Screen,
+    parts: &[(&str, &RawWindow)],
+) -> String {
+    if let Some(o) = reported
+        && matches!(
+            o,
+            "portrait" | "portraitUpsideDown" | "landscapeLeft" | "landscapeRight"
+        )
+    {
+        return o.to_string();
+    }
+    if matches!(device_orient, "landscapeLeft" | "landscapeRight") {
+        let mut any_past_portrait_w = false;
+        let mut any_past_landscape_h = false;
+        for (_, w) in parts {
+            if w.class.contains("StatusBar") {
+                continue;
+            }
+            for e in &w.elements {
+                let (cx, cy) = (e.frame[0] + e.frame[2] / 2.0, e.frame[1] + e.frame[3] / 2.0);
+                if cx < 0.0 || cy < 0.0 {
+                    continue;
+                }
+                if cx > screen.width + 1.0 && cx <= screen.height + 1.0 {
+                    any_past_portrait_w = true;
+                }
+                if cy > screen.width + 1.0 && cy <= screen.height + 1.0 {
+                    any_past_landscape_h = true;
+                }
+            }
+        }
+        if !any_past_portrait_w && any_past_landscape_h {
+            return "portrait".to_string();
+        }
+    }
+    match device_orient {
+        "unknown" | "" => "portrait".to_string(),
+        o => o.to_string(),
+    }
+}
+
 pub fn snapshot(dev: &Device) -> Result<Snapshot> {
     let dir = phone::data_dir(dev).join("tmp/agent-sim");
     std::fs::create_dir_all(&dir)?;
@@ -415,14 +474,25 @@ pub fn snapshot(dev: &Device) -> Result<Snapshot> {
     parts.extend(sb_windows(&|w| w.class.contains("StatusBar")));
 
     let screen = phone::Screen::of(dev)?;
+    let reported_orient = if locked {
+        springboard.orientation.as_deref()
+    } else {
+        modal
+            .as_ref()
+            .and_then(|m| m.orientation.as_deref())
+            .or_else(|| app.as_ref().and_then(|a| a.orientation.as_deref()))
+            .or(springboard.orientation.as_deref())
+    };
+    let device_orient = crate::cmd::current_orientation(dev);
+    let orient = resolve_orientation(reported_orient, &device_orient, screen, &parts);
+    let bounds = crate::cmd::upright_bounds(screen, &orient);
     let mut elements = Vec::new();
     for (owner, w) in parts {
         let home =
             owner == "SpringBoard" && (w.class.contains("HomeScreen") || w.class.contains("Dock"));
         for e in &w.elements {
             // off screen (a page scrolled away, a view sliding out): not something to read or tap
-            let (cx, cy) = (e.frame[0] + e.frame[2] / 2.0, e.frame[1] + e.frame[3] / 2.0);
-            if cx < 0.0 || cy < 0.0 || cx > screen.width || cy > screen.height {
+            if !on_screen(e.frame, bounds) {
                 continue;
             }
             let mut states = Vec::new();
@@ -463,6 +533,7 @@ pub fn snapshot(dev: &Device) -> Result<Snapshot> {
         modal: modal_name,
         modal_not_answering,
         app_not_answering,
+        orientation: Some(orient),
         elements,
     };
     std::fs::write(
@@ -542,14 +613,17 @@ pub fn format(s: &Snapshot) -> String {
     out
 }
 
-/// Finds an element by reference (`@e3` / `e3`) in the last snapshot.
-pub fn resolve(dev: &Device, r: &str) -> Result<Element> {
+/// Finds an element by reference (`@e3` / `e3`) in the last snapshot, along with that snapshot's UI orientation.
+pub fn resolve_with_orientation(dev: &Device, r: &str) -> Result<(Element, Option<String>)> {
     let want = r.trim_start_matches('@');
-    last(dev)?
+    let snap = last(dev)?;
+    let orient = snap.orientation;
+    let el = snap
         .elements
         .into_iter()
         .find(|e| e.reference == want)
-        .with_context(|| format!("no element {r} in the last snapshot"))
+        .with_context(|| format!("no element {r} in the last snapshot"))?;
+    Ok((el, orient))
 }
 
 /// The element `text` names: one whose label, value or id equals it (ignoring case), else one that contains it.
@@ -620,6 +694,7 @@ mod tests {
             modal: None,
             modal_not_answering: false,
             app_not_answering: false,
+            orientation: None,
             elements: vec![
                 el("e1", "heading", "Sign in"),
                 el("e2", "button", "Sign in"),
@@ -639,6 +714,7 @@ mod tests {
             modal: Some("PhotosPicker".into()),
             modal_not_answering: false,
             app_not_answering: false,
+            orientation: None,
             elements: vec![],
         };
         assert_eq!(
@@ -652,6 +728,7 @@ mod tests {
             modal: Some("PhotosPicker".into()),
             modal_not_answering: true,
             app_not_answering: false,
+            orientation: None,
             elements: vec![],
         };
         assert!(format(&busy).contains("modal PhotosPicker not answering yet"));
@@ -666,6 +743,7 @@ mod tests {
             modal: None,
             modal_not_answering: false,
             app_not_answering: false,
+            orientation: None,
             elements: vec![],
         };
         assert_eq!(format(&s), "lock screen\n");
@@ -697,5 +775,92 @@ mod tests {
         )
         .unwrap();
         assert_eq!(scoped.webview_pids, vec![24999]);
+    }
+
+    #[test]
+    fn on_screen_uses_upright_bounds() {
+        let scr = phone::Screen {
+            width: 402.0,
+            height: 874.0,
+        };
+        let landscape = crate::cmd::upright_bounds(scr, "landscapeLeft");
+        // Right-half toolbar button in landscape (x=700, y=30) must not be dropped by portrait width 402
+        assert!(on_screen([680.0, 10.0, 40.0, 40.0], landscape));
+        assert!(!on_screen(
+            [680.0, 10.0, 40.0, 40.0],
+            (scr.width, scr.height)
+        ));
+        assert!(!on_screen([100.0, 450.0, 40.0, 40.0], landscape));
+    }
+
+    #[test]
+    fn resolve_orientation_handles_portrait_locked_apps_in_landscape() {
+        let scr = phone::Screen {
+            width: 402.0,
+            height: 874.0,
+        };
+        let portrait_win = RawWindow {
+            class: "UIWindow".into(),
+            level: 0.0,
+            elements: vec![
+                RawElement {
+                    label: Some("Top".into()),
+                    value: None,
+                    hint: None,
+                    id: None,
+                    traits: vec!["button".into()],
+                    frame: [150.0, 250.0, 100.0, 44.0],
+                },
+                RawElement {
+                    label: Some("Bottom".into()),
+                    value: None,
+                    hint: None,
+                    id: None,
+                    traits: vec!["button".into()],
+                    frame: [150.0, 600.0, 100.0, 44.0],
+                },
+            ],
+        };
+        let landscape_win = RawWindow {
+            class: "UIWindow".into(),
+            level: 0.0,
+            elements: vec![RawElement {
+                label: Some("Tabs".into()),
+                value: None,
+                hint: None,
+                id: None,
+                traits: vec!["button".into()],
+                frame: [760.0, 10.0, 40.0, 44.0],
+            }],
+        };
+        // Explicit interface orientation from hook wins over physical device orientation
+        assert_eq!(
+            resolve_orientation(
+                Some("portrait"),
+                "landscapeLeft",
+                scr,
+                &[("App", &portrait_win)]
+            ),
+            "portrait"
+        );
+        assert_eq!(
+            resolve_orientation(
+                Some("landscapeLeft"),
+                "landscapeLeft",
+                scr,
+                &[("Safari", &landscape_win)]
+            ),
+            "landscapeLeft"
+        );
+        // Legacy hook fallback (reported=None): portrait-locked app keeps portrait bounds
+        assert_eq!(
+            resolve_orientation(None, "landscapeLeft", scr, &[("App", &portrait_win)]),
+            "portrait"
+        );
+        // Legacy hook fallback: landscape app keeps landscapeLeft
+        assert_eq!(
+            resolve_orientation(None, "landscapeLeft", scr, &[("Safari", &landscape_win)]),
+            "landscapeLeft"
+        );
     }
 }
