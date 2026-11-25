@@ -127,14 +127,28 @@ fix_prefix() {
 	rm -rf "$pre" "$pre.workdir" 2>/dev/null || sudo -n rm -rf "$pre" "$pre.workdir"
 }
 
+# The RuntimeRoot of the runtime this phone boots: <device>/runtime names its runtimes/ directory (x86Sim's device
+# create writes it). A phone without one boots x86Sim's default runtime: the first one installed is taken.
+runtime_root() {
+	local rr
+	if [ -s "$DIR/runtime" ]; then
+		rr=$DATA/runtimes/$(<"$DIR/runtime")/RuntimeRoot
+		[ -x "$rr/usr/bin/defaults" ] && echo "$rr"
+		return
+	fi
+	for rr in "$DATA"/runtimes/*/RuntimeRoot; do
+		[ -x "$rr/usr/bin/defaults" ] && { echo "$rr"; return; }
+	done
+	return 1
+}
+
 # `agent-sim snapshot` reads what UIKit describes, and UIKit describes controls only while app accessibility is on
 # (setup turns it on, as Accessibility Inspector does in Apple's simulator). On a phone's first boot a preferences
 # migration can reset both keys to 0 after setup wrote them, and every snapshot is then empty (issue #8). Each boot
 # checks them and writes them back; a running phone takes the change at once.
 ensure_accessibility() {
 	local rr cur key off=0
-	rr=$(ls -d "$DATA"/runtimes/*/extracted/Library/Developer/CoreSimulator/Profiles/Runtimes/*/Contents/Resources/RuntimeRoot 2>/dev/null | head -1) || true
-	[ -x "$rr/usr/bin/defaults" ] || return 0
+	rr=$(runtime_root) || return 0
 	cur=$(cd "$DATA" && X86SIM_DEVICE=$DIR "$X" x86sim spawn "$rr/usr/bin/defaults" read com.apple.Accessibility 2>/dev/null) || true
 	for key in ApplicationAccessibilityEnabled AccessibilityEnabled; do
 		grep -q "^ *$key = 1;" <<<"$cur" || off=1

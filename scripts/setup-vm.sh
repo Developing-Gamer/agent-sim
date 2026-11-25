@@ -6,7 +6,8 @@
 #
 # Environment:
 #   X86SIM_VERSION   x86Sim release (default 0.5.3)
-#   RUNTIME_BUILD    iOS runtime build from Apple's catalogue (default 24B8117, iOS 27.2)
+#   RUNTIME_BUILD    iOS runtime build from Apple's catalogue (default 24B8117, iOS 27.2); the phone is created on
+#                    it, and a phone already made on another runtime needs another DEVICE
 #   DEVICE, MODEL    the phone to create (default p, "iPhone 17 Pro (at 2x)")
 #   FIDELITY=high    a phone that looks exactly like Apple's simulator: the model's own pixel density ("iPhone 17 Pro",
 #                    3x) and every visual effect (blur, transparency, motion). The default, fast, draws at 2x with
@@ -169,9 +170,13 @@ if "iPhone 17 Pro (at 2x)" not in types:
     json.dump(types, open(path, "w"), indent=1)
 PY
 
-if [ ! -d "$DATA/var/device-a64-$DEVICE" ]; then
+DIR=$DATA/var/device-a64-$DEVICE
+if [ ! -d "$DIR" ]; then
 	log "Creating the phone $DEVICE ($MODEL)"
-	"$X" x86sim device create --model "$MODEL" "$DEVICE"
+	# on RUNTIME_BUILD: without --ios, x86Sim takes its default runtime whatever RUNTIME_BUILD says
+	"$X" x86sim device create --model "$MODEL" --ios "$RUNTIME_BUILD" "$DEVICE"
+elif [ -s "$DIR/runtime" ] && [[ $(<"$DIR/runtime") != *-"$RUNTIME_BUILD"-arm64 ]]; then
+	die "$DEVICE runs $(<"$DIR/runtime"), not $RUNTIME_BUILD: pick another DEVICE for this runtime"
 fi
 
 aot_status() {
@@ -179,7 +184,6 @@ aot_status() {
 	s=$("$X" aot --device "$DATA/var/device-a64-$DEVICE" status 2>/dev/null) || true
 	grep -m1 '^image ' <<<"$s" || true
 }
-DIR=$DATA/var/device-a64-$DEVICE
 trained=$DIR/.agent-sim-trained
 calm=$DIR/.agent-sim-settings-2
 # Reduce Transparency and Reduce Motion (fast only): blurs and long animations are the costliest things to draw on a

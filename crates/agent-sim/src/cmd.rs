@@ -803,18 +803,30 @@ pub fn logs(dev: &Device, bundle: &str, lines: usize, matching: Option<&str>) ->
     Ok(out)
 }
 
-/// The iOS runtime's root (its /usr/bin tools run inside the phone through `x86sim spawn`).
-fn runtime_root() -> Result<PathBuf> {
+/// The root of the iOS runtime the phone boots (its /usr/bin tools run inside the phone through `x86sim spawn`).
+/// `<device>/runtime` names its directory under `runtimes/` (x86Sim's `device create` writes it); x86Sim links
+/// `RuntimeRoot` there once the runtime is unpacked. A phone without one boots x86Sim's default runtime: the first
+/// one installed is taken.
+fn runtime_root(dev: &Device) -> Result<PathBuf> {
     let base = crate::device::data_dir()?.join("runtimes");
+    let named = std::fs::read_to_string(dev.dir.join("runtime"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    if let Some(name) = named {
+        let root = base.join(&name).join("RuntimeRoot");
+        if !root.join("usr/bin/defaults").is_file() {
+            bail!(
+                "the phone's runtime {name} is not installed under {}",
+                base.display()
+            );
+        }
+        return Ok(root);
+    }
     for rt in std::fs::read_dir(&base)?.flatten() {
-        let profiles = rt
-            .path()
-            .join("extracted/Library/Developer/CoreSimulator/Profiles/Runtimes");
-        for sim in std::fs::read_dir(&profiles).into_iter().flatten().flatten() {
-            let root = sim.path().join("Contents/Resources/RuntimeRoot");
-            if root.join("usr/bin/defaults").is_file() {
-                return Ok(root);
-            }
+        let root = rt.path().join("RuntimeRoot");
+        if root.join("usr/bin/defaults").is_file() {
+            return Ok(root);
         }
     }
     bail!("no iOS runtime under {}", base.display())
@@ -827,7 +839,7 @@ pub fn appearance(dev: &Device, mode: &str) -> Result<String> {
         "dark" => "2",
         _ => bail!("appearance light or dark"),
     };
-    let rt = runtime_root()?;
+    let rt = runtime_root(dev)?;
     let defaults = rt.join("usr/bin/defaults");
     let notify = rt.join("usr/bin/notifyutil");
     phone::x86sim_ok(
@@ -890,7 +902,7 @@ pub fn effects(name: &str, mode: &str) -> Result<String> {
         "reduced" => "true",
         _ => bail!("effects full or reduced"),
     };
-    let defaults = runtime_root()?.join("usr/bin/defaults");
+    let defaults = runtime_root(&dev)?.join("usr/bin/defaults");
     for key in ["ReduceMotionEnabled", "EnhancedBackgroundContrastEnabled"] {
         phone::x86sim_ok(
             &dev,
