@@ -71,7 +71,7 @@ enum Command {
     /// Tap an element (@e3 from the last snapshot), a point (x y, in screen points), or the first element whose
     /// text matches.
     Tap {
-        #[arg(required = true, num_args = 1.., allow_hyphen_values = true)]
+        #[arg(required = true, num_args = 1..)]
         target: Vec<String>,
         /// Hold for this long (a long press).
         #[arg(long, default_value_t = 80)]
@@ -466,6 +466,36 @@ mod tests {
                 assert_eq!(args, vec!["-mode", "demo"]);
             }
             _ => panic!("expected Launch"),
+        }
+    }
+
+    #[test]
+    fn tap_parses_hold_ms_before_and_after_target() {
+        for argv in [
+            vec!["agent-sim", "tap", "Settings", "--hold-ms", "900"],
+            vec!["agent-sim", "tap", "--hold-ms", "900", "Settings"],
+        ] {
+            match Cli::parse_from(argv).command {
+                Command::Tap { target, hold_ms } => {
+                    assert_eq!(target, vec!["Settings"]);
+                    assert_eq!(hold_ms, 900);
+                }
+                _ => panic!("expected Tap"),
+            }
+        }
+        match Cli::parse_from(["agent-sim", "tap", "200", "400", "--hold-ms", "650"]).command {
+            Command::Tap { target, hold_ms } => {
+                assert_eq!(target, vec!["200", "400"]);
+                assert_eq!(hold_ms, 650);
+            }
+            _ => panic!("expected Tap"),
+        }
+        match Cli::parse_from(["agent-sim", "tap", "--", "-5%"]).command {
+            Command::Tap { target, hold_ms } => {
+                assert_eq!(target, vec!["-5%"]);
+                assert_eq!(hold_ms, 80);
+            }
+            _ => panic!("expected Tap"),
         }
     }
 }

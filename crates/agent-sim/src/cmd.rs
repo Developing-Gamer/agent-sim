@@ -399,14 +399,19 @@ fn type_steps(text: &str) -> Vec<TypeStep<'_>> {
     steps
 }
 
-fn type_keys(dev: &Device, text: &str) -> Result<()> {
-    if text.chars().all(|c| crate::input::key_usage(c).is_some()) {
-        hid(dev).text(text)?;
-    } else {
-        // characters without a key of their own go through x86Sim's typing
-        phone::x86sim_ok(dev, &["type", text])?;
+fn validate_key_text(text: &str) -> Result<()> {
+    if let Some(bad) = text.chars().find(|&c| crate::input::key_usage(c).is_none()) {
+        bail!(
+            "cannot send {bad:?} (U+{:04X}) as a hardware key press: HID keys only support US ASCII; omit --keys and focus a text field to insert Unicode text",
+            bad as u32
+        );
     }
     Ok(())
+}
+
+fn type_keys(dev: &Device, text: &str) -> Result<()> {
+    validate_key_text(text)?;
+    hid(dev).text(text)
 }
 
 /// Types into the field that has focus. The app inserts the text as the software keyboard does, which every field
@@ -1244,8 +1249,8 @@ pub fn record(dev: &Device, out: &Path, secs: f64, fps: u32) -> Result<String> {
 mod tests {
     use super::{
         RELAUNCH_SETTLE, TypeStep, clipboard, drag_progress, launch_args, parse_lat_lon, rotate,
-        settle_left, type_steps, upright_bounds, upright_to_panel, validate_pinch,
-        validate_privacy, validate_push_payload,
+        settle_left, type_steps, upright_bounds, upright_to_panel, validate_key_text,
+        validate_pinch, validate_privacy, validate_push_payload,
     };
     use crate::device::Device;
     use std::path::PathBuf;
@@ -1311,6 +1316,14 @@ mod tests {
             ]
         );
         assert_eq!(type_steps(""), Vec::<TypeStep>::new());
+    }
+
+    #[test]
+    fn validate_key_text_accepts_ascii_and_rejects_unicode() {
+        assert!(validate_key_text("O'Brien+1_test@example.com [a]{b}|\\`~<>\n\t").is_ok());
+        let err = validate_key_text("Café").unwrap_err().to_string();
+        assert!(err.contains("U+00E9"), "unexpected error: {err}");
+        assert!(err.contains("US ASCII"), "unexpected error: {err}");
     }
 
     #[test]

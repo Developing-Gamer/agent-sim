@@ -16,9 +16,10 @@ pub struct Hid {
     path: PathBuf,
     sock: Option<UnixStream>,
     last_down: Instant,
+    kb_warmed: bool,
 }
 
-/// The HID usage (page 7) for a character, and whether it needs shift.
+/// The HID usage (page 7) for a character, and whether it needs shift (US QWERTY layout).
 pub fn key_usage(c: char) -> Option<(u8, bool)> {
     Some(match c {
         'a'..='z' => (4 + (c as u8 - b'a'), false),
@@ -33,12 +34,22 @@ pub fn key_usage(c: char) -> Option<(u8, bool)> {
         '_' => (0x2d, true),
         '=' => (0x2e, false),
         '+' => (0x2e, true),
+        '[' => (0x2f, false),
+        '{' => (0x2f, true),
+        ']' => (0x30, false),
+        '}' => (0x30, true),
+        '\\' => (0x31, false),
+        '|' => (0x31, true),
         ';' => (0x33, false),
         ':' => (0x33, true),
         '\'' => (0x34, false),
         '"' => (0x34, true),
+        '`' => (0x35, false),
+        '~' => (0x35, true),
         ',' => (0x36, false),
+        '<' => (0x36, true),
         '.' => (0x37, false),
+        '>' => (0x37, true),
         '/' => (0x38, false),
         '?' => (0x38, true),
         '!' => (0x1e, true),
@@ -46,6 +57,7 @@ pub fn key_usage(c: char) -> Option<(u8, bool)> {
         '#' => (0x20, true),
         '$' => (0x21, true),
         '%' => (0x22, true),
+        '^' => (0x23, true),
         '&' => (0x24, true),
         '*' => (0x25, true),
         '(' => (0x26, true),
@@ -74,6 +86,7 @@ impl Hid {
             path,
             sock: None,
             last_down: Instant::now(),
+            kb_warmed: false,
         }
     }
 
@@ -90,6 +103,7 @@ impl Hid {
                 return Ok(());
             }
             self.sock = None;
+            self.kb_warmed = false;
             if attempt == 1 {
                 anyhow::bail!("simhid closed the connection");
             }
@@ -111,6 +125,7 @@ impl Hid {
                 if held < MIN_TAP {
                     std::thread::sleep(MIN_TAP - held);
                 }
+                self.kb_warmed = false;
                 self.send(&format!("touch up {x:.5} {y:.5}"))
             }
             _ => Ok(()),
@@ -132,6 +147,7 @@ impl Hid {
                 if held < MIN_TAP {
                     std::thread::sleep(MIN_TAP - held);
                 }
+                self.kb_warmed = false;
                 self.send(&format!("touch2 up {x1:.5} {y1:.5} {x2:.5} {y2:.5}"))
             }
             _ => Ok(()),
@@ -152,12 +168,23 @@ impl Hid {
     /// Types `s` key by key. Keys pressed back to back were dropped (a web field kept one character of
     /// seventeen, a search field five of nine): each key is held and followed by a pause, as a fast typist's are.
     pub fn text(&mut self, s: &str) -> Result<()> {
-        const HOLD: Duration = Duration::from_millis(15);
-        const GAP: Duration = Duration::from_millis(35);
-        for c in s.chars() {
-            let Some((usage, shift)) = key_usage(c) else {
-                continue;
-            };
+        const HOLD: Duration = Duration::from_millis(25);
+        const GAP: Duration = Duration::from_millis(40);
+        // simhid sleeps on the first key command of a session for up to SIMHID_KB_TOUCH_GUARD_MS (1000 ms)
+        // after a touch lift or SIMHID_KB_FIRST_SETTLE_MS (800 ms) on first attach. Lines sent while it
+        // sleeps queue in the socket and then drain back-to-back in <1 ms, scrambling Shift and dropping
+        // trailing keys. Warm up with a harmless Shift release and wait for simhid's settle to finish first.
+        const WARMUP_SETTLE: Duration = Duration::from_millis(1050);
+        let keys: Vec<(u8, bool)> = s.chars().filter_map(key_usage).collect();
+        if keys.is_empty() {
+            return Ok(());
+        }
+        if !self.kb_warmed && (keys.len() > 1 || keys[0].1) {
+            self.send("key up 225")?;
+            std::thread::sleep(WARMUP_SETTLE);
+        }
+        self.kb_warmed = true;
+        for (usage, shift) in keys {
             if shift {
                 self.send("key down 225")?;
                 std::thread::sleep(HOLD);
@@ -168,6 +195,7 @@ impl Hid {
             if shift {
                 std::thread::sleep(HOLD);
                 self.send("key up 225")?;
+                std::thread::sleep(HOLD);
             }
             std::thread::sleep(GAP);
         }
@@ -186,6 +214,25 @@ mod tests {
         assert_eq!(key_usage('0'), Some((0x27, false)));
         assert_eq!(key_usage('\n'), Some((0x28, false)));
         assert_eq!(key_usage('é'), None);
+    }
+
+    #[test]
+    fn key_usage_covers_all_printable_ascii() {
+        for b in b' '..=b'~' {
+            let c = b as char;
+            assert!(key_usage(c).is_some(), "missing HID usage for {c:?}");
+        }
+        assert_eq!(key_usage('^'), Some((0x23, true)));
+        assert_eq!(key_usage('['), Some((0x2f, false)));
+        assert_eq!(key_usage('{'), Some((0x2f, true)));
+        assert_eq!(key_usage(']'), Some((0x30, false)));
+        assert_eq!(key_usage('}'), Some((0x30, true)));
+        assert_eq!(key_usage('\\'), Some((0x31, false)));
+        assert_eq!(key_usage('|'), Some((0x31, true)));
+        assert_eq!(key_usage('`'), Some((0x35, false)));
+        assert_eq!(key_usage('~'), Some((0x35, true)));
+        assert_eq!(key_usage('<'), Some((0x36, true)));
+        assert_eq!(key_usage('>'), Some((0x37, true)));
     }
 
     #[test]
