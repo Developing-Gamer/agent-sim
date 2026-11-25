@@ -564,6 +564,9 @@ pub fn launch(
         if pid == "-1" {
             bail!("{bundle} did not start (is it installed? `agent-sim apps`)");
         }
+        if let Ok(p) = pid.parse::<u32>() {
+            record_launched_pid(dev, bundle, p);
+        }
         std::thread::sleep(Duration::from_millis(1500));
         let alive = phone::x86sim_run(dev, &["pidof", bundle])?.status.success();
         if alive || attempt == 1 {
@@ -578,9 +581,8 @@ pub fn launch(
 /// SpringBoard unresponsive (issue #6).
 const RELAUNCH_SETTLE: Duration = Duration::from_millis(1500);
 
-/// The file whose modification time says when `terminate` last finished with `bundle`.
-fn terminated_marker(dev: &Device, bundle: &str) -> Result<PathBuf> {
-    let safe: String = bundle
+fn safe_bundle_key(bundle: &str) -> String {
+    bundle
         .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '.' || c == '-' {
@@ -589,8 +591,44 @@ fn terminated_marker(dev: &Device, bundle: &str) -> Result<PathBuf> {
                 '_'
             }
         })
-        .collect();
-    Ok(phone::state_dir(dev)?.join(format!("terminated-{safe}")))
+        .collect()
+}
+
+/// The file whose modification time says when `terminate` last finished with `bundle`.
+fn terminated_marker(dev: &Device, bundle: &str) -> Result<PathBuf> {
+    Ok(phone::state_dir(dev)?.join(format!("terminated-{}", safe_bundle_key(bundle))))
+}
+
+/// Guest PIDs launched for `bundle` (newest first, up to 16), used to disambiguate `logs` when multiple
+/// installed apps share the same `CFBundleExecutable` (for example Flutter/DartNative `Runner` apps).
+fn launched_pids_file(dev: &Device, bundle: &str) -> Result<PathBuf> {
+    Ok(phone::state_dir(dev)?.join(format!("launched-{}", safe_bundle_key(bundle))))
+}
+
+fn read_launched_pids(path: &Path) -> Vec<u32> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    text.lines()
+        .filter_map(|l| l.trim().parse::<u32>().ok())
+        .collect()
+}
+
+fn write_launched_pid(path: &Path, pid: u32) {
+    let mut pids = vec![pid];
+    for p in read_launched_pids(path) {
+        if p != pid && pids.len() < 16 {
+            pids.push(p);
+        }
+    }
+    let body: String = pids.iter().map(|p| format!("{p}\n")).collect();
+    let _ = std::fs::write(path, body);
+}
+
+fn record_launched_pid(dev: &Device, bundle: &str, pid: u32) {
+    if let Ok(path) = launched_pids_file(dev, bundle) {
+        write_launched_pid(&path, pid);
+    }
 }
 
 /// What is left of the settle time for an app stopped `age` ago, if anything.
@@ -733,25 +771,183 @@ pub fn wait(dev: &Device, text: &str, timeout: Duration, gone: bool) -> Result<S
     }
 }
 
-/// The executable name of an installed app.
-fn executable(dev: &Device, bundle: &str) -> Result<String> {
-    let out = phone::x86sim_ok(dev, &["listapps", "--json"])?;
-    let v: serde_json::Value = serde_json::from_str(&out).context("reading x86sim listapps")?;
-    v.get(bundle)
-        .and_then(|a| a.get("CFBundleExecutable"))
-        .and_then(|e| e.as_str())
-        .map(str::to_string)
-        .with_context(|| format!("{bundle} is not installed"))
+struct AppLogMeta {
+    exe: String,
+    bundle_path: Option<String>,
+    /// True when more than one installed app uses the same `CFBundleExecutable` (e.g. multiple `Runner` apps).
+    exe_shared: bool,
 }
 
-fn newest(dir: &Path, prefix: &str) -> Option<PathBuf> {
-    std::fs::read_dir(dir)
-        .ok()?
+fn parse_app_log_meta(listapps_json: &str, bundle: &str) -> Result<AppLogMeta> {
+    let v: serde_json::Value =
+        serde_json::from_str(listapps_json).context("reading x86sim listapps")?;
+    let entry = v
+        .get(bundle)
+        .with_context(|| format!("{bundle} is not installed"))?;
+    let exe = entry
+        .get("CFBundleExecutable")
+        .and_then(|e| e.as_str())
+        .map(str::to_string)
+        .with_context(|| format!("{bundle} is not installed"))?;
+    let bundle_path = entry
+        .get("Path")
+        .and_then(|p| p.as_str())
+        .map(str::to_string);
+    let shared_count = v
+        .as_object()
+        .map(|m| {
+            m.values()
+                .filter(|a| {
+                    a.get("CFBundleExecutable").and_then(|e| e.as_str()) == Some(exe.as_str())
+                })
+                .count()
+        })
+        .unwrap_or(1);
+    Ok(AppLogMeta {
+        exe,
+        bundle_path,
+        exe_shared: shared_count > 1,
+    })
+}
+
+/// Metadata needed to locate an installed app's log files without confusing apps that share an executable name.
+fn app_log_meta(dev: &Device, bundle: &str) -> Result<AppLogMeta> {
+    let out = phone::x86sim_ok(dev, &["listapps", "--json"])?;
+    parse_app_log_meta(&out, bundle)
+}
+
+fn sorted_by_mtime_desc(dir: &Path, prefix: &str) -> Vec<PathBuf> {
+    let mut entries: Vec<_> = std::fs::read_dir(dir)
+        .ok()
+        .into_iter()
+        .flatten()
         .flatten()
         .filter(|e| e.file_name().to_string_lossy().starts_with(prefix))
         .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
-        .max()
-        .map(|(_, p)| p)
+        .collect();
+    entries.sort_by_key(|a| std::cmp::Reverse(a.0));
+    entries.into_iter().map(|(_, p)| p).collect()
+}
+
+fn parse_pid_from_log(path: &Path, prefix: &str) -> Option<u32> {
+    let name = path.file_name()?.to_str()?;
+    let rest = name.strip_prefix(prefix)?;
+    let pid_str = rest.strip_suffix(".log").unwrap_or(rest);
+    pid_str.parse::<u32>().ok()
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum OslogOwner {
+    Matches,
+    Other,
+    Unknown,
+}
+
+fn read_prefix(path: &Path, max_bytes: usize) -> String {
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return String::new();
+    };
+    let mut buf = vec![0u8; max_bytes];
+    let n = f.read(&mut buf).unwrap_or(0);
+    buf.truncate(n);
+    String::from_utf8_lossy(&buf).into_owned()
+}
+
+/// Checks whether an `oslog.<exe>.<pid>.log` header identifies `bundle` (or explicitly belongs to a different app).
+fn oslog_owner(path: &Path, bundle: &str, bundle_path: Option<&str>) -> OslogOwner {
+    let head = read_prefix(path, 64 * 1024);
+    if let Some(bp) = bundle_path {
+        if head.contains(bp) {
+            return OslogOwner::Matches;
+        }
+    }
+    let domain_tag = format!("(Domain: {bundle},");
+    let app_tag = format!("app<{bundle}");
+    let scene_tag = format!("sceneID:{bundle}");
+    if head.contains(&domain_tag) || head.contains(&app_tag) || head.contains(&scene_tag) {
+        return OslogOwner::Matches;
+    }
+    // If the file explicitly logs a `main bundle CFBundle ... </.../Other.app>` that does not match our bundle path,
+    // reject it so PID reuse or shared executable names never surface another app's log.
+    for line in head.lines() {
+        if let Some(idx) = line.find("main bundle CFBundle ") {
+            let rest = &line[idx..];
+            if let (Some(lt), Some(gt)) = (rest.find('<'), rest.find('>')) {
+                if gt > lt {
+                    let logged_path = &rest[lt + 1..gt];
+                    if bundle_path == Some(logged_path) {
+                        return OslogOwner::Matches;
+                    }
+                    return OslogOwner::Other;
+                }
+            }
+        }
+    }
+    OslogOwner::Unknown
+}
+
+fn pick_oslog(
+    log_dir: &Path,
+    bundle: &str,
+    meta: &AppLogMeta,
+    candidate_pids: &[u32],
+) -> Option<PathBuf> {
+    let prefix = format!("oslog.{}.", meta.exe);
+    for &pid in candidate_pids {
+        let p = log_dir.join(format!("{prefix}{pid}.log"));
+        if p.is_file() && oslog_owner(&p, bundle, meta.bundle_path.as_deref()) != OslogOwner::Other
+        {
+            return Some(p);
+        }
+    }
+    let files = sorted_by_mtime_desc(log_dir, &prefix);
+    if let Some(p) = files
+        .iter()
+        .find(|p| oslog_owner(p, bundle, meta.bundle_path.as_deref()) == OslogOwner::Matches)
+    {
+        return Some(p.clone());
+    }
+    if !meta.exe_shared {
+        return files
+            .into_iter()
+            .find(|p| oslog_owner(p, bundle, meta.bundle_path.as_deref()) != OslogOwner::Other);
+    }
+    None
+}
+
+fn pick_last_run(
+    run_dir: &Path,
+    meta: &AppLogMeta,
+    candidate_pids: &[u32],
+    oslog_pid: Option<u32>,
+) -> Option<PathBuf> {
+    let prefix = format!("{}.", meta.exe);
+    for &pid in candidate_pids.iter().chain(oslog_pid.iter()) {
+        let p = run_dir.join(format!("{prefix}{pid}.log"));
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    if !meta.exe_shared {
+        return sorted_by_mtime_desc(run_dir, &prefix).into_iter().next();
+    }
+    None
+}
+
+fn report_crashed(report: &str) -> bool {
+    [
+        "guest exception",
+        "killing pid",
+        "SIGABRT",
+        "SIGSEGV",
+        "SIGBUS",
+        "SIGTRAP",
+        "SIGILL",
+        "SIGSYS",
+    ]
+    .iter()
+    .any(|needle| report.contains(needle))
 }
 
 fn tail(path: &Path, lines: usize, matching: Option<&str>) -> String {
@@ -767,12 +963,28 @@ fn tail(path: &Path, lines: usize, matching: Option<&str>) -> String {
 /// An app's os_log messages (when it was launched with logs on) and the translator's report of its last run, which
 /// names a crash's cause and guest backtrace.
 pub fn logs(dev: &Device, bundle: &str, lines: usize, matching: Option<&str>) -> Result<String> {
-    let exe = executable(dev, bundle)?;
+    let meta = app_log_meta(dev, bundle)?;
+    let mut candidate_pids = Vec::new();
+    if let Ok(out) = phone::x86sim_run(dev, &["pidof", bundle]) {
+        if out.status.success() {
+            if let Ok(p) = String::from_utf8_lossy(&out.stdout).trim().parse::<u32>() {
+                candidate_pids.push(p);
+            }
+        }
+    }
+    if let Ok(path) = launched_pids_file(dev, bundle) {
+        for p in read_launched_pids(&path) {
+            if !candidate_pids.contains(&p) {
+                candidate_pids.push(p);
+            }
+        }
+    }
     let mut out = String::new();
-    let oslog = newest(
-        &phone::data_dir(dev).join("var/log"),
-        &format!("oslog.{exe}."),
-    );
+    let log_dir = phone::data_dir(dev).join("var/log");
+    let oslog = pick_oslog(&log_dir, bundle, &meta, &candidate_pids);
+    let oslog_pid = oslog
+        .as_deref()
+        .and_then(|p| parse_pid_from_log(p, &format!("oslog.{}.", meta.exe)));
     match oslog {
         Some(p) => {
             out.push_str(&format!("== os_log ({})\n", p.display()));
@@ -795,9 +1007,9 @@ pub fn logs(dev: &Device, bundle: &str, lines: usize, matching: Option<&str>) ->
     let run = home.join(format!(
         ".cache/x86sim/a64prefix-{short}/private/var/tmp/x86sim-a64"
     ));
-    if let Some(p) = newest(&run, &format!("{exe}.")) {
+    if let Some(p) = pick_last_run(&run, &meta, &candidate_pids, oslog_pid) {
         let report = tail(&p, lines.min(60), None);
-        let crashed = report.contains("guest exception") || report.contains("killing pid");
+        let crashed = report_crashed(&report);
         out.push_str(&format!(
             "\n\n== last run ({}){}\n{report}",
             p.display(),
@@ -1436,5 +1648,117 @@ mod tests {
             rotate(img, 2, 1, "portraitUpsideDown"),
             (vec![0, 255, 0, 255, 0, 0], 2, 1)
         );
+    }
+
+    #[test]
+    fn logs_scoping_separates_apps_sharing_runner_executable() {
+        use super::{
+            OslogOwner, oslog_owner, parse_app_log_meta, parse_pid_from_log, pick_last_run,
+            pick_oslog, read_launched_pids, report_crashed, write_launched_pid,
+        };
+
+        let listapps = r#"{
+            "com.example.liquid": {
+                "CFBundleExecutable": "Runner",
+                "Path": "/data/Containers/Bundle/Application/AAA/LiquidGlass.app"
+            },
+            "com.example.chat": {
+                "CFBundleExecutable": "Runner",
+                "Path": "/data/Containers/Bundle/Application/BBB/ChatScreen.app"
+            },
+            "com.example.unique": {
+                "CFBundleExecutable": "UniqueApp",
+                "Path": "/data/Containers/Bundle/Application/CCC/UniqueApp.app"
+            }
+        }"#;
+
+        let chat = parse_app_log_meta(listapps, "com.example.chat").unwrap();
+        assert_eq!(chat.exe, "Runner");
+        assert!(chat.exe_shared);
+        let unique = parse_app_log_meta(listapps, "com.example.unique").unwrap();
+        assert!(!unique.exe_shared);
+
+        let root = std::env::temp_dir().join(format!("agent-sim-logs-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let log_dir = root.join("var/log");
+        let run_dir = root.join("x86sim-a64");
+        std::fs::create_dir_all(&log_dir).unwrap();
+        std::fs::create_dir_all(&run_dir).unwrap();
+
+        // LiquidGlass has an oslog (pid 10040) and a crashed last-run (pid 10040); Search/Other has a newer run (pid 13117);
+        // ChatScreen was launched with pid 12654 without --logs.
+        let liquid_oslog = log_dir.join("oslog.Runner.10040.log");
+        std::fs::write(
+            &liquid_oslog,
+            "948.520 [1507] main bundle CFBundle 0x1 </data/Containers/Bundle/Application/AAA/LiquidGlass.app> (executable, loaded)\n\
+             948.736 [1603] (Domain: com.example.liquid, User: current)\n",
+        )
+        .unwrap();
+        std::fs::write(run_dir.join("Runner.10040.log"), "_pthread_kill(SIGABRT)\n").unwrap();
+        std::fs::write(run_dir.join("Runner.12654.log"), "jitcache: chat run\n").unwrap();
+        std::fs::write(
+            run_dir.join("Runner.13117.log"),
+            "jitcache: newer other run\n",
+        )
+        .unwrap();
+
+        // Pid history persistence + deduplication
+        let pid_file = root.join("launched-com.example.chat");
+        write_launched_pid(&pid_file, 11111);
+        write_launched_pid(&pid_file, 12654);
+        write_launched_pid(&pid_file, 11111);
+        assert_eq!(read_launched_pids(&pid_file), vec![11111, 12654]);
+
+        // Chat must NEVER pick LiquidGlass's oslog or the newer Runner.13117.log.
+        assert_eq!(
+            oslog_owner(
+                &liquid_oslog,
+                "com.example.chat",
+                chat.bundle_path.as_deref()
+            ),
+            OslogOwner::Other
+        );
+        assert_eq!(
+            pick_oslog(&log_dir, "com.example.chat", &chat, &[12654]),
+            None
+        );
+        // Even if PID 10040 were reused, LiquidGlass's oslog header is rejected for Chat.
+        assert_eq!(
+            pick_oslog(&log_dir, "com.example.chat", &chat, &[10040]),
+            None
+        );
+        assert_eq!(
+            pick_last_run(&run_dir, &chat, &[12654], None),
+            Some(run_dir.join("Runner.12654.log"))
+        );
+
+        // LiquidGlass finds its own oslog and run by header match even with empty candidate PIDs.
+        let liquid = parse_app_log_meta(listapps, "com.example.liquid").unwrap();
+        let picked_oslog = pick_oslog(&log_dir, "com.example.liquid", &liquid, &[]);
+        assert_eq!(picked_oslog, Some(liquid_oslog.clone()));
+        let oslog_pid = parse_pid_from_log(&liquid_oslog, "oslog.Runner.");
+        assert_eq!(oslog_pid, Some(10040));
+        assert_eq!(
+            pick_last_run(&run_dir, &liquid, &[], oslog_pid),
+            Some(run_dir.join("Runner.10040.log"))
+        );
+
+        // Unique executable still falls back when launched outside agent-sim.
+        let unique_run = run_dir.join("UniqueApp.9999.log");
+        std::fs::write(&unique_run, "jitcache: unique\n").unwrap();
+        assert_eq!(
+            pick_last_run(&run_dir, &unique, &[], None),
+            Some(unique_run)
+        );
+
+        // Crash signal detection
+        assert!(report_crashed("_pthread_kill(SIGABRT): guest backtrace"));
+        assert!(report_crashed("SIGSEGV at 0x0"));
+        assert!(report_crashed("guest exception 0x1"));
+        assert!(!report_crashed(
+            "jitcache: loaded 100 blocks\ndyld_sim prepare done"
+        ));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
