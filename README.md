@@ -116,9 +116,10 @@ agent-sim --device "$phone" snapshot
 agent-sim pool release "$phone"    # it restarts in the background for the next taker
 ```
 
-Phones share memory through the kernel's KSM: three take 6.8 GB together instead of 8.7 GB. On a cloud provider
-with VM memory snapshots, a booted phone can be saved and brought back running in about 20 seconds
-([docs/BENCHMARKS.md](docs/BENCHMARKS.md)).
+Phones share memory through the kernel's KSM: three take 6.8 GB together instead of 8.7 GB. `pool up` turns KSM on
+with sudo (it asks on a terminal; without one it needs a cached sudo, or skips KSM and says so; `AGENT_SIM_KSM=0`
+leaves it off). On a cloud provider with VM memory snapshots, a booted phone can be saved and brought back running in
+about 20 seconds ([docs/BENCHMARKS.md](docs/BENCHMARKS.md)).
 
 ## What it can and cannot tell you
 
