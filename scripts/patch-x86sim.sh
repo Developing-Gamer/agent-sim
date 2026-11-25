@@ -17,11 +17,12 @@ SRC=$ROOT/src/x86sim-$X86SIM_VERSION
 BUILD=$ROOT/build/arm64jit-$X86SIM_VERSION
 DATA=${XDG_DATA_HOME:-$HOME/.local/share}/x86sim
 # the unpacked AppImage, the copy x86Sim installs under its data directory on first run (userns mode), and the
-# root-owned system-mode install under /opt/x86sim (the one phones load when it exists)
+# root-owned system-mode install under /opt/x86sim (the one phones load when it exists, unless
+# X86SIM_DARLING_MODE=userns: then it is unused, and patching it would only ask for root)
 mapfile -t LIBS < <(find "$ROOT/x86sim-$X86SIM_VERSION" "$DATA"/app/"$X86SIM_VERSION"* -name libarm64jit.so \
 	-path '*libexec/darling*' 2>/dev/null)
 OPT_LIB=$(readlink -f /opt/x86sim/darling 2>/dev/null || true)/libexec/darling/usr/libexec/darling/libarm64jit.so
-if [ -f "$OPT_LIB" ]; then LIBS+=("$OPT_LIB"); fi
+if [ "${X86SIM_DARLING_MODE:-auto}" != userns ] && [ -f "$OPT_LIB" ]; then LIBS+=("$OPT_LIB"); fi
 [ ${#LIBS[@]} -gt 0 ] || { echo "patch-x86sim.sh: x86Sim $X86SIM_VERSION is not installed; run scripts/setup-vm.sh" >&2; exit 1; }
 
 if [ "${1:-}" = restore ]; then
