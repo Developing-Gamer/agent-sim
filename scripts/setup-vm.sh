@@ -13,6 +13,11 @@
 #                    3x) and every visual effect (blur, transparency, motion). The default, fast, draws at 2x with
 #                    Reduce Transparency and Reduce Motion on: it scrolls faster (docs/BENCHMARKS.md).
 #   AGENT_SIM_PATCH_X86SIM=0   keep x86Sim's own translator (skips the fixes in patches/x86sim)
+#   AGENT_SIM_DESKTOP=1|0      set up for a desktop (1) or a server (0); by default, a desktop when setup runs in a
+#                    local graphical login. A server gets what unattended phones need, with root: the user lingers,
+#                    so phones run with nobody logged in, and Darling is installed for x86Sim's system mode. A desktop
+#                    needs neither: phones run in the login, and Darling runs without root (x86Sim's own default).
+#   X86SIM_DARLING_MODE=system|userns  pick x86Sim's Darling mode yourself (userns: nothing is installed as root)
 #
 # Apple's iOS runtime is downloaded from Apple onto this machine (about 8 GB) and never leaves it.
 set -Eeuo pipefail
@@ -33,6 +38,16 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 log() { printf '\n==> %s\n' "$*"; }
 die() { printf 'setup-vm.sh: %s\n' "$*" >&2; exit 1; }
+
+# A local graphical login: a seat's Wayland or X11 session, not one over SSH (logind's Remote) or none at all (an agent
+# or a service running setup).
+is_desktop() {
+	case ${AGENT_SIM_DESKTOP:-} in 1) return 0 ;; 0) return 1 ;; esac
+	[ -n "${XDG_SESSION_ID:-}" ] || return 1
+	local s
+	s=$(loginctl show-session "$XDG_SESSION_ID" -p Type -p Remote 2>/dev/null) || return 1
+	grep -qx 'Remote=no' <<<"$s" && grep -qxE 'Type=(wayland|x11)' <<<"$s"
+}
 
 log "Checking the machine"
 [ "$(uname -m)" = x86_64 ] || die "x86Sim needs an x86-64 machine"
@@ -84,10 +99,11 @@ install_runtime_packages() {
 log "Installing packages"
 install_runtime_packages
 
-log "Keeping a user session for x86Sim's sockets and services"
 # x86Sim puts sockets under /run/user/<uid> and runs phones as user services; without a login session (a server
-# reached over SSH or an API) neither exists unless the user lingers.
-if [ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null || true)" != yes ]; then
+# reached over SSH or an API) neither exists unless the user lingers. On a desktop the login provides both, and phones
+# stop with it, as other apps do.
+if ! is_desktop && [ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null || true)" != yes ]; then
+	log "Keeping a user session for x86Sim's sockets and services"
 	sudo loginctl enable-linger "$USER"
 fi
 for _ in $(seq 20); do [ -S "/run/user/$(id -u)/bus" ] && break; sleep 0.5; done
@@ -117,13 +133,21 @@ if [ "${AGENT_SIM_PATCH_X86SIM:-1}" = 1 ]; then
 	"$HERE/patch-x86sim.sh"
 fi
 
-# x86Sim runs Darling either from a root-owned install under /opt/x86sim ("system" mode) or, when the kernel allows
-# unprivileged user namespaces, through a namespace holder process ("userns" mode). In userns mode the first boot
-# after the holder is (re)created stalls (x86Sim's docs/RELEASE.md), which happened after every VM restart; system
-# mode has no holder. x86Sim picks system mode whenever this install is present. After patching, so it carries the
-# patched translator.
+# x86Sim runs Darling either from a root-owned install under /opt/x86sim ("system" mode, bin/darling setuid root) or,
+# when the kernel allows unprivileged user namespaces, through a namespace holder process ("userns" mode, no root).
+# In userns mode the first boot after the holder is (re)created stalls (x86Sim's docs/RELEASE.md), which happened after
+# every VM restart; system mode has no holder. A server gets system mode for that. A desktop keeps x86Sim's default,
+# userns: a stalled first boot after a reboot is restarted (by phone.sh wait, and by the x86Sim app), and nothing is
+# installed setuid root. Where user namespaces are blocked (Ubuntu's AppArmor default) only system mode works. x86Sim
+# picks system mode whenever this install is present. After patching, so it carries the patched translator.
 S=$ROOT/x86sim-$X86SIM_VERSION/usr/share/x86sim
-if [ "$(cat /opt/x86sim/darling/.x86sim-complete 2>/dev/null)" != "$(cat "$S/DARLING_ID")" ] &&
+darling_mode=${X86SIM_DARLING_MODE:-}
+if [ -z "$darling_mode" ]; then
+	darling_mode=system
+	is_desktop && unshare -r -m true 2>/dev/null && darling_mode=userns
+fi
+if [ "$darling_mode" = system ] &&
+	[ "$(cat /opt/x86sim/darling/.x86sim-complete 2>/dev/null)" != "$(cat "$S/DARLING_ID")" ] &&
 	sudo -n true 2>/dev/null; then
 	log "Installing Darling for x86Sim's system mode (/opt/x86sim, root-owned)"
 	sudo sh "$S/install-helper.sh" install "$S/darling" "$(cat "$S/DARLING_ID")"

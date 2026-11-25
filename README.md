@@ -43,6 +43,12 @@ agent-sim snapshot
 
 From a checkout instead: `cargo build --release`, then `scripts/setup-vm.sh` and `target/release/agent-sim`.
 
+Setup also works on a desktop (Ubuntu, Arch and others; it installs packages with apt, pacman or dnf). Run from a
+desktop login, it leaves out what only unattended servers need: it does not make the user linger (phones run while you
+are logged in) and installs nothing setuid root (Darling runs in a user namespace, x86Sim's own default). Run over SSH
+or by an agent, it sets up a server: lingering, and x86Sim's root-owned Darling, whose first boot after a restart does
+not stall. `AGENT_SIM_DESKTOP=1` or `0` picks instead.
+
 `agent-sim setup --fidelity high --device hifi` adds a phone that looks exactly like Apple's simulator (3x, every
 blur and animation) for screenshots; the default draws at 2x with reduced effects and scrolls twice as fast.
 
