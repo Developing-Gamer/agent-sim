@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- `snapshot`, `tap`, `swipe`, `scroll` and `record` work in landscape: elements right of the portrait width are no
+  longer dropped, taps land where they are aimed, and recordings come out upright. Portrait-locked apps stay portrait.
+- `tap "Settings" --hold-ms 900` no longer reads the flag as part of the target; `type --keys` no longer leaves Shift
+  stuck or drops characters, covers all printable US ASCII, and refuses other characters with a clear message.
+- `logs` finds the right app's os_log and last run when several apps share an executable name (every Flutter app is
+  `Runner`), and reports signal crashes (SIGABRT, SIGSEGV...) as crashed.
+- `snapshot` of a web view inside another app's in-app browser no longer lists the app behind it, and
+  SafariViewService windows that UIKit shows late are no longer empty.
+- Back-to-back `status-bar`, `clipboard` and `type` requests no longer wait out a 15 s timeout.
+- The MCP server lists `appearance`, `status_bar`, `clipboard`, `logs` and `type`'s `keys` (26 tools).
+- Dead `hooked-<pid>` markers are removed before SpringBoard looks processes up, so long sessions keep `snapshot` fast.
+- Setup and the scripts find x86Sim's data and cache directories as its AppRun does (`X86SIM_DATA`, `X86SIM_CACHE`),
+  reuse an iOS runtime that is already unpacked, create the phone on `RUNTIME_BUILD`, keep the user-namespace
+  Darling prefix under `X86SIM_DARLING_MODE=userns`, and take the Vulkan driver and Metal programs from `x86sim.env`.
+- `pool up` goes on without KSM when sudo cannot ask for a password.
 - `rotate left|right`, `orientation [NAME]` and `pinch CX CY R1 R2` (two fingers), in the CLI and the MCP server.
 - `snapshot` reads a phone on the Lock Screen as `lock screen` (Cover Sheet and status bar only), not as the home screen.
 - `snapshot` reads out-of-process modals such as the photo picker (`app <bundle> (modal PhotosPicker)`), and `type`
