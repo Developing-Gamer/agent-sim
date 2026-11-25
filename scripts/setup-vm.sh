@@ -87,8 +87,8 @@ install_runtime_packages
 log "Keeping a user session for x86Sim's sockets and services"
 # x86Sim puts sockets under /run/user/<uid> and runs phones as user services; without a login session (a server
 # reached over SSH or an API) neither exists unless the user lingers.
-if [ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null || true)" != yes ]; then
-	sudo loginctl enable-linger "$USER"
+if [ "$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null || true)" != yes ]; then
+	sudo loginctl enable-linger "$(id -un)"
 fi
 for _ in $(seq 20); do [ -S "/run/user/$(id -u)/bus" ] && break; sleep 0.5; done
 export XDG_RUNTIME_DIR=/run/user/$(id -u)
@@ -120,15 +120,22 @@ fi
 # x86Sim runs Darling either from a root-owned install under /opt/x86sim ("system" mode) or, when the kernel allows
 # unprivileged user namespaces, through a namespace holder process ("userns" mode). In userns mode the first boot
 # after the holder is (re)created stalls (x86Sim's docs/RELEASE.md), which happened after every VM restart; system
-# mode has no holder. x86Sim picks system mode whenever this install is present. After patching, so it carries the
-# patched translator.
+# mode has no holder. x86Sim picks system mode whenever this install is present and matches its DARLING_ID; after
+# an x86Sim update changes that ID, it falls back to userns mode (or, where user namespaces are blocked, to an outdated
+# system install) until Darling is installed again. sudo asks on a terminal; without one (an agent, a service) it must
+# already be allowed. After patching, so it carries the patched translator.
 S=$ROOT/x86sim-$X86SIM_VERSION/usr/share/x86sim
-if [ "$(cat /opt/x86sim/darling/.x86sim-complete 2>/dev/null)" != "$(cat "$S/DARLING_ID")" ] &&
-	sudo -n true 2>/dev/null; then
+if [ "$(cat /opt/x86sim/darling/.x86sim-complete 2>/dev/null)" != "$(cat "$S/DARLING_ID")" ]; then
 	log "Installing Darling for x86Sim's system mode (/opt/x86sim, root-owned)"
-	sudo sh "$S/install-helper.sh" install "$S/darling" "$(cat "$S/DARLING_ID")"
-	# a holder left from userns mode would keep being used by phones started before
-	for f in "${X86SIM_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/x86sim}"/userns-*.pid; do [ -f "$f" ] && kill "$(cat "$f")" 2>/dev/null; rm -f "$f"; done
+	sudo=(sudo)
+	[ -t 0 ] || sudo=(sudo -n)
+	if "${sudo[@]}" sh "$S/install-helper.sh" install "$S/darling" "$(cat "$S/DARLING_ID")"; then
+		# a holder left from userns mode would keep being used by phones started before
+		for f in "${X86SIM_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/x86sim}"/userns-*.pid; do [ -f "$f" ] && kill "$(cat "$f")" 2>/dev/null; rm -f "$f"; done
+	else
+		echo "setup-vm.sh: Darling was not installed for system mode (needs root: run setup from a terminal); x86Sim" \
+			"uses its user-namespace mode if it can, whose first boot after a restart stalls" >&2
+	fi
 fi
 
 # The runtime's directory (runtimes/ios-<version>-<build>-arm64). x86Sim's runtime-fetch.py links RuntimeRoot in it
