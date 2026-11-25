@@ -8,8 +8,9 @@
 #   scripts/pool.sh down          stop every pool phone
 #
 # A new phone is prepared like the first (scripts/setup-vm.sh with DEVICE set), which reuses the runtime and its
-# pre-translated code: about a minute each. With two or more, phones share memory through KSM (pool.sh turns it on);
-# see docs/BENCHMARKS.md for how many fit.
+# pre-translated code: about a minute each. With two or more, phones share memory through KSM (pool.sh turns it on,
+# which needs root: sudo asks on a terminal, and without one a cached sudo is used or KSM is skipped with a note;
+# AGENT_SIM_KSM=0 leaves it off); see docs/BENCHMARKS.md for how many fit.
 # Everything phone.sh reads from the environment (LP_NUM_THREADS, AGENT_SIM_EXTRA_JOBS...) applies to each phone.
 set -Eeuo pipefail
 
@@ -26,10 +27,19 @@ running() { [ "$("$HERE/phone.sh" status "$1")" = active ]; }
 case ${1:-} in
 up)
 	n=${2:?usage: pool.sh up N}
-	if [ "$n" -ge 2 ] && [ -e /sys/kernel/mm/ksm/run ]; then
-		# phones share most of their memory (the same iOS runtime): merge identical pages (docs/BENCHMARKS.md)
-		echo 1000 | sudo tee /sys/kernel/mm/ksm/pages_to_scan >/dev/null
-		echo 1 | sudo tee /sys/kernel/mm/ksm/run >/dev/null
+	ksm=/sys/kernel/mm/ksm
+	if [ "$n" -ge 2 ] && [ "${AGENT_SIM_KSM:-1}" = 1 ] && [ -e "$ksm/run" ] &&
+		{ [ "$(cat "$ksm/run")" != 1 ] || [ "$(cat "$ksm/pages_to_scan")" -lt 1000 ]; }; then
+		# phones share most of their memory (the same iOS runtime): merge identical pages (docs/BENCHMARKS.md).
+		# Without a terminal sudo cannot ask for a password, and a failed tee would stop the whole pool under set -e:
+		# use a cached sudo or go on without KSM.
+		sudo=(sudo)
+		[ -t 0 ] || sudo=(sudo -n)
+		if ! { echo 1000 | "${sudo[@]}" tee "$ksm/pages_to_scan" >/dev/null &&
+			echo 1 | "${sudo[@]}" tee "$ksm/run" >/dev/null; } 2>/dev/null; then
+			echo "pool.sh: KSM not turned on (needs root), so phones will not share memory;" \
+				"run 'echo 1 | sudo tee $ksm/run' or set AGENT_SIM_KSM=0 to skip it" >&2
+		fi
 	fi
 	for i in $(seq 1 "$n"); do
 		d=pool$i
