@@ -35,11 +35,10 @@ die() { printf 'setup-vm.sh: %s\n' "$*" >&2; exit 1; }
 
 log "Checking the machine"
 [ "$(uname -m)" = x86_64 ] || die "x86Sim needs an x86-64 machine"
+case $RUNTIME_BUILD in '' | *[![:alnum:]]*) die "RUNTIME_BUILD is a build like 24B8117, not '$RUNTIME_BUILD'" ;; esac
 # awk reads all of ldd's output: with head, ldd could die of SIGPIPE and pipefail stopped the script silently
 glibc=$(ldd --version 2>/dev/null | awk 'NR == 1' | grep -oE '[0-9]+\.[0-9]+$')
 awk "BEGIN{exit !($glibc >= 2.39)}" || die "x86Sim needs glibc 2.39 or newer (Ubuntu 24.04+), found $glibc"
-free_gb=$(df -BG --output=avail "$HOME" | tail -1 | tr -dc 0-9)
-[ "$free_gb" -ge 45 ] || [ -d "$DATA/runtimes" ] || die "need 45 GB free in $HOME for the runtime, have ${free_gb} GB"
 [ "$(nproc)" -ge 4 ] || echo "warning: fewer than 4 CPUs; the phone will be slow"
 
 have_vulkan_icd() {
@@ -131,20 +130,30 @@ if [ "$(cat /opt/x86sim/darling/.x86sim-complete 2>/dev/null)" != "$(cat "$S/DAR
 	for f in "$HOME"/.cache/x86sim/userns-*.pid; do [ -f "$f" ] && kill "$(cat "$f")" 2>/dev/null; rm -f "$f"; done
 fi
 
-fetched=$DATA/runtimes/.agent-sim-fetched-$RUNTIME_BUILD
-if [ ! -e "$fetched" ]; then
+# The runtime's directory (runtimes/ios-<version>-<build>-arm64). x86Sim's runtime-fetch.py links RuntimeRoot in it
+# only once the runtime is unpacked and checked, so the link marks a complete runtime, whoever fetched it (this script
+# or the x86Sim app). Fetching again would download all 8 GB again: the download is deleted after unpacking.
+runtime_dir() {
+	local d
+	for d in "$DATA"/runtimes/*-"$RUNTIME_BUILD"-arm64; do
+		[ -x "$d/RuntimeRoot/usr/bin/defaults" ] && { echo "$d"; return 0; }
+	done
+	return 1
+}
+if ! RUNTIME_DIR=$(runtime_dir); then
+	free_gb=$(df -BG --output=avail "$DATA" | tail -1 | tr -dc 0-9)
+	[ "$free_gb" -ge 45 ] || die "need 45 GB free in $DATA for the runtime, have ${free_gb} GB"
 	log "Downloading the iOS runtime $RUNTIME_BUILD from Apple (about 8 GB)"
 	# Apple's CDN drops long downloads now and then; the fetch resumes where it stopped
 	for attempt in 1 2 3 4 5; do
-		if "$X" shell -c "python3 cli/libexec/arm64/runtime-fetch.py fetch $RUNTIME_BUILD"; then
-			touch "$fetched"
-			break
-		fi
+		"$X" shell -c "python3 cli/libexec/arm64/runtime-fetch.py fetch $RUNTIME_BUILD" && break
 		[ "$attempt" = 5 ] && die "the runtime download failed 5 times"
 		echo "download interrupted; resuming (attempt $((attempt + 1)) of 5)"
 		sleep 5
 	done
+	RUNTIME_DIR=$(runtime_dir) || die "the runtime $RUNTIME_BUILD is not complete after the download"
 fi
+RUNTIME_ROOT=$RUNTIME_DIR/RuntimeRoot
 
 log "Adding iPhone 17 Pro (at 2x): the iPhone 17 Pro's layout at 44% of the pixels"
 types=$(ls "$DATA"/app/"$X86SIM_VERSION"*/cli/lib/devicetypes-a64.json | head -1)
@@ -173,7 +182,6 @@ aot_status() {
 DIR=$DATA/var/device-a64-$DEVICE
 trained=$DIR/.agent-sim-trained
 calm=$DIR/.agent-sim-settings-2
-RUNTIME_ROOT=$(ls -d "$DATA"/runtimes/*-"$RUNTIME_BUILD"-arm64/extracted/Library/Developer/CoreSimulator/Profiles/Runtimes/*.simruntime/Contents/Resources/RuntimeRoot | head -1)
 # Reduce Transparency and Reduce Motion (fast only): blurs and long animations are the costliest things to draw on a
 # CPU. And app accessibility, as Accessibility Inspector turns it on in Apple's simulator: UIKit then describes every
 # control, which `agent-sim snapshot` reads.
