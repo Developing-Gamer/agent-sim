@@ -47,7 +47,10 @@ fn tools() -> Value {
         tool(
             "type",
             "Type text into the focused text field (tap the field first). \\n presses Return.",
-            json!({"text": {"type": "string"}}),
+            json!({
+                "text": {"type": "string"},
+                "keys": {"type": "boolean", "description": "Send hardware key events instead of inserting directly via UIKeyInput (ASCII only)"}
+            }),
             &["text"]
         ),
         tool(
@@ -107,6 +110,39 @@ fn tools() -> Value {
             "terminate",
             "Stop an app by bundle id.",
             json!({"bundle_id": {"type": "string"}}),
+            &["bundle_id"]
+        ),
+        tool(
+            "appearance",
+            "Set the phone's light or dark appearance (as simctl ui appearance).",
+            json!({"mode": {"type": "string", "enum": ["light", "dark"]}}),
+            &["mode"]
+        ),
+        tool(
+            "status_bar",
+            "Override status bar items for clean screenshots, or restore defaults with clear=true.",
+            json!({
+                "time": {"type": "string", "description": "Status bar clock text, e.g. \"9:41\""},
+                "battery": {"type": "integer", "minimum": 0, "maximum": 100, "description": "Battery percentage (0..100)"},
+                "charging": {"type": "boolean", "description": "Show the battery as charging"},
+                "clear": {"type": "boolean", "description": "Remove status bar overrides and restore defaults"}
+            }),
+            &[]
+        ),
+        tool(
+            "clipboard",
+            "Set the phone's general pasteboard text (reading the clipboard is not supported).",
+            json!({"text": {"type": "string", "description": "Text to copy into the phone's clipboard"}}),
+            &["text"]
+        ),
+        tool(
+            "logs",
+            "Read recent os_log messages captured for an app (start it with launch logs=true first).",
+            json!({
+                "bundle_id": {"type": "string"},
+                "lines": {"type": "integer", "description": "Maximum number of trailing lines to return (default 100)"},
+                "grep": {"type": "string", "description": "Optional substring filter"}
+            }),
             &["bundle_id"]
         ),
         tool(
@@ -527,15 +563,39 @@ mod tests {
         }
         let names: Vec<&str> = arr.iter().filter_map(|t| t["name"].as_str()).collect();
         for want in [
+            "snapshot",
+            "screenshot",
+            "tap",
+            "type",
+            "scroll",
+            "swipe",
+            "pinch",
+            "orientation",
+            "rotate",
+            "press",
+            "launch",
+            "terminate",
+            "appearance",
+            "status_bar",
+            "clipboard",
+            "logs",
+            "install",
+            "uninstall",
+            "apps",
+            "open_url",
+            "wait_for",
             "location",
             "addmedia",
             "privacy",
             "push",
-            "pinch",
-            "orientation",
-            "rotate",
+            "boot",
         ] {
             assert!(names.contains(&want), "missing MCP tool {want}");
         }
+        let type_tool = arr.iter().find(|t| t["name"] == "type").unwrap();
+        assert!(
+            type_tool["inputSchema"]["properties"]["keys"].is_object(),
+            "type tool missing keys option in schema"
+        );
     }
 }
