@@ -56,9 +56,9 @@ Status: **same** as on a Mac, **close** (works, with a noted difference), **gap*
 
 | Feature | Mac | agent-sim | Status |
 |---|---|---|---|
-| Touch, multi-touch, edge gestures (home, Control Center, Notification Center) | yes | yes | same |
+| Touch, multi-touch, edge gestures (home, Control Center, Notification Center) | yes | yes; `agent-sim pinch CX CY R1 R2` for two fingers | same |
 | App switcher | yes | yes | same |
-| Rotation | yes | yes; screenshots come out upright | same |
+| Rotation | yes | `agent-sim rotate left\|right`, `agent-sim orientation NAME`; screenshots come out upright | same |
 | Hardware keyboard typing | yes | `agent-sim type --keys` | same |
 | Typing text into any field | yes | `agent-sim type` inserts as the software keyboard does (key events lost characters in web fields) | close |
 | Software keyboard on screen | toggled with Cmd-K | hidden (a hardware keyboard is attached, as on a Mac by default) | gap |
@@ -70,7 +70,7 @@ Status: **same** as on a Mac, **close** (works, with a noted difference), **gap*
 | Shake, memory warning | yes | yes | same |
 | Dark mode (`simctl ui appearance`) | yes | `agent-sim appearance dark` | same |
 | Status bar overrides (`simctl status_bar`) | yes | `agent-sim status-bar --time 9:41 --battery 100 --charging`; cellular and Wi-Fi bars not yet | close |
-| Clipboard (`simctl pbcopy` / `pbpaste`) | yes | `agent-sim clipboard` | same |
+| Clipboard (`simctl pbcopy` / `pbpaste`) | yes | `agent-sim clipboard TEXT` sets it; reading it is not supported (see [KNOWN_ISSUES](KNOWN_ISSUES.md)) | gap |
 | Screenshots (`simctl io screenshot`) | yes | `agent-sim screenshot` | same |
 | Screen recording (`simctl io recordVideo`) | yes | `agent-sim record` (x86Sim's recorder wrote empty files) | same |
 | Erase a device (`simctl erase`) | yes | `agent-sim erase` | same |

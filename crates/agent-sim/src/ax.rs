@@ -416,14 +416,15 @@ pub fn snapshot(dev: &Device) -> Result<Snapshot> {
             });
         }
     }
-    let modal_name = modal
-        .as_ref()
-        .map(|m| m.process.clone())
-        .or_else(|| modal_not_answering.then(|| front.hosted_scene.clone()).flatten());
+    let modal_name = modal.as_ref().map(|m| m.process.clone()).or_else(|| {
+        modal_not_answering
+            .then(|| front.hosted_scene.clone())
+            .flatten()
+    });
     let snap = Snapshot {
-        app: front
-            .bundle
-            .filter(|_| app.is_some() || app_not_answering || modal.is_some() || modal_not_answering),
+        app: front.bundle.filter(|_| {
+            app.is_some() || app_not_answering || modal.is_some() || modal_not_answering
+        }),
         locked,
         modal: modal_name,
         modal_not_answering,
@@ -602,7 +603,10 @@ mod tests {
             app_not_answering: false,
             elements: vec![],
         };
-        assert_eq!(format(&active), "app com.example.app (modal PhotosPicker)\n");
+        assert_eq!(
+            format(&active),
+            "app com.example.app (modal PhotosPicker)\n"
+        );
         let busy = Snapshot {
             app: Some("com.example.app".into()),
             locked: false,

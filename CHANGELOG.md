@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- `rotate left|right`, `orientation [NAME]` and `pinch CX CY R1 R2` (two fingers), in the CLI and the MCP server.
+- `snapshot` reads a phone on the Lock Screen as `lock screen` (Cover Sheet and status bar only), not as the home screen.
+- `snapshot` reads out-of-process modals such as the photo picker (`app <bundle> (modal PhotosPicker)`), and `type`
+  goes into their fields; before, only the covered app was listed.
+- `snapshot` shows the status bar clock as overridden by `status-bar --time`, as the screenshot does.
+- `clipboard` no longer reads the pasteboard (it hung SpringBoard until the phone was restarted); `clipboard TEXT` still
+  sets it.
 - `snapshot` is no longer empty on a phone whose first-boot reset turned app accessibility off: every boot checks the
   two settings and turns them back on (issue #8).
 - `status` reports a phone whose SpringBoard does not answer as `hung`, and `snapshot` and x86Sim commands that time

@@ -87,7 +87,11 @@ pub fn set_orientation(dev: &Device, name: Option<&str>) -> Result<String> {
         }
         None => phone::x86sim_ok(dev, &["orientation"])?,
     };
-    Ok(out.trim().to_string())
+    // a phone nobody has turned yet reports `unknown`; it is upright, as `screenshot` treats it
+    Ok(match out.trim() {
+        "unknown" | "" => "portrait".to_string(),
+        o => o.to_string(),
+    })
 }
 
 /// Turns the phone 90 degrees left (counterclockwise) or right (clockwise) and returns the new orientation.
@@ -304,13 +308,7 @@ pub fn swipe(dev: &Device, from: (f64, f64), to: (f64, f64), ms: u64) -> Result<
     ))
 }
 
-fn validate_pinch(
-    cx: f64,
-    cy: f64,
-    r1: f64,
-    r2: f64,
-    bounds: (f64, f64),
-) -> Result<()> {
+fn validate_pinch(cx: f64, cy: f64, r1: f64, r2: f64, bounds: (f64, f64)) -> Result<()> {
     if ![cx, cy, r1, r2].iter().all(|v| v.is_finite()) {
         bail!("pinch coordinates and radii must be finite numbers");
     }
@@ -1237,9 +1235,9 @@ pub fn record(dev: &Device, out: &Path, secs: f64, fps: u32) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        RELAUNCH_SETTLE, TypeStep, clipboard, drag_progress, launch_args, parse_lat_lon, rotate, settle_left,
-        type_steps, upright_bounds, upright_to_panel, validate_pinch, validate_privacy,
-        validate_push_payload,
+        RELAUNCH_SETTLE, TypeStep, clipboard, drag_progress, launch_args, parse_lat_lon, rotate,
+        settle_left, type_steps, upright_bounds, upright_to_panel, validate_pinch,
+        validate_privacy, validate_push_payload,
     };
     use crate::device::Device;
     use std::path::PathBuf;
@@ -1386,15 +1384,30 @@ mod tests {
             height: 800.0,
         };
         let approx = |(ax, ay): (f64, f64), (bx, by): (f64, f64)| {
-            assert!((ax - bx).abs() < 1e-6 && (ay - by).abs() < 1e-6, "({ax},{ay}) != ({bx},{by})");
+            assert!(
+                (ax - bx).abs() < 1e-6 && (ay - by).abs() < 1e-6,
+                "({ax},{ay}) != ({bx},{by})"
+            );
         };
-        approx(upright_to_panel(scr, 100.0, 200.0, "portrait"), (0.25, 0.25));
+        approx(
+            upright_to_panel(scr, 100.0, 200.0, "portrait"),
+            (0.25, 0.25),
+        );
         // landscapeLeft: upright (800x400), top-left (0,0) maps to panel (1,0)
         assert_eq!(upright_bounds(scr, "landscapeLeft"), (800.0, 400.0));
-        approx(upright_to_panel(scr, 200.0, 100.0, "landscapeLeft"), (0.75, 0.25));
+        approx(
+            upright_to_panel(scr, 200.0, 100.0, "landscapeLeft"),
+            (0.75, 0.25),
+        );
         // landscapeRight: upright (800x400), top-left (0,0) maps to panel (0,1)
-        approx(upright_to_panel(scr, 200.0, 100.0, "landscapeRight"), (0.25, 0.75));
-        approx(upright_to_panel(scr, 100.0, 200.0, "portraitUpsideDown"), (0.75, 0.75));
+        approx(
+            upright_to_panel(scr, 200.0, 100.0, "landscapeRight"),
+            (0.25, 0.75),
+        );
+        approx(
+            upright_to_panel(scr, 100.0, 200.0, "portraitUpsideDown"),
+            (0.75, 0.75),
+        );
     }
 
     #[test]
