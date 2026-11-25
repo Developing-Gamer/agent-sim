@@ -25,6 +25,7 @@
 #include <unistd.h>
 #include <time.h>
 #include <dirent.h>
+#include <errno.h>
 #include <sys/stat.h>
 
 typedef struct { double x, y, w, h; } Rect;
@@ -228,6 +229,16 @@ static bool find_hosted_modal(long host_pid, long *out_pid, char *out_scene, siz
 		if (strncmp(ent->d_name, "hooked-", 7) != 0) continue;
 		long pid = atol(ent->d_name + 7);
 		if (pid <= 0 || pid == host_pid || pid == self_pid) continue;
+		// Prune dead processes before making synchronous RunningBoard XPC lookups so long-running simulators
+		// do not accumulate hundreds of stale hooked-<pid> files and time out write_front().
+		if (kill((pid_t)pid, 0) != 0 && errno == ESRCH) {
+			char stale[1200];
+			snprintf(stale, sizeof stale, "%s/%s", dir, ent->d_name);
+			unlink(stale);
+			snprintf(stale, sizeof stale, "%s/ax-%ld.json", dir, pid);
+			unlink(stale);
+			continue;
+		}
 		id ident = SEND(id, (id)idc, "identifierWithPid:", int)((id)idc, SEL_("identifierWithPid:"), (int)pid);
 		if (!ident) continue;
 		id err = nil;
