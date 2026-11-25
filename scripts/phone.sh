@@ -118,10 +118,13 @@ ensure_penv() {
 
 # Darling's prefix (the container's root overlay, a cache) is made for one of x86Sim's two modes: one from the
 # user-namespace mode is owned by the user, and system-mode Darling refuses it ("workdir/private must be a directory
-# that only root can use"). A prefix from the other mode is removed; Darling makes a new one.
+# that only root can use"). A prefix from the other mode is removed; Darling makes a new one. With
+# X86SIM_DARLING_MODE=userns, x86Sim runs user-namespace mode even when the system install exists, and the prefix is
+# the right one.
 fix_prefix() {
 	local pre=$CACHE/a64prefix-$DEVICE
 	[ -e /opt/x86sim/darling/.x86sim-complete ] || return 0
+	[ "${X86SIM_DARLING_MODE:-auto}" != userns ] || return 0
 	[ -d "$pre.workdir/private" ] && [ "$(stat -c %u "$pre.workdir/private")" != 0 ] || return 0
 	echo "phone.sh: $DEVICE's Darling prefix is from x86Sim's user-namespace mode; making a new one" >&2
 	rm -rf "$pre" "$pre.workdir" 2>/dev/null || sudo -n rm -rf "$pre" "$pre.workdir"
