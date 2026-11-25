@@ -462,37 +462,43 @@ static void dump_web_now(void *ctx) {
 	write_file(name, buf, len);
 }
 
-// Visible windows in this process: UIApplication.windows is empty in hosted remote view services such as
-// SafariViewService (ASWebAuthenticationSession / SFSafariViewController), whose content lives in a scene window
-// or _UIHostedWindow. Fall back to connectedScenes and +[UIWindow allWindowsIncludingInternalWindows:onlyVisibleWindows:].
-static id app_windows(id app) {
-	id wins = get(app, "windows");
-	for (unsigned long i = 0, n = count(wins); i < n; i++) {
-		id w = at(wins, i);
-		if (!getb(w, "isHidden") && getd(w, "alpha") >= 0.01) return wins;
+// Visible windows in this process: UIApplication.windows can be empty or contain only a system
+// UITextEffectsWindow in hosted remote view services such as SafariViewService (ASWebAuthenticationSession /
+// SFSafariViewController), whose content lives in a connected scene window or _UIHostedWindow. Merge visible
+// windows from app.windows and connectedScenes, and fall back to
+// +[UIWindow allWindowsIncludingInternalWindows:onlyVisibleWindows:] when no non-system content window is present.
+static bool is_aux_system_window(id w) {
+	const char *cls = object_getClassName(w);
+	return cls && (!strcmp(cls, "UITextEffectsWindow") || !strcmp(cls, "UIRemoteKeyboardWindow"));
+}
+static void add_visible_windows(id arr, id src, bool *has_content) {
+	for (unsigned long i = 0, n = count(src); i < n; i++) {
+		id w = at(src, i);
+		if (getb(w, "isHidden") || getd(w, "alpha") < 0.01) continue;
+		if (SEND(bool, arr, "containsObject:", id)(arr, SEL_("containsObject:"), w)) continue;
+		SEND(void, arr, "addObject:", id)(arr, SEL_("addObject:"), w);
+		if (has_content && !is_aux_system_window(w)) *has_content = true;
 	}
+}
+static id app_windows(id app) {
+	id arr = SEND(id, (id)objc_getClass("NSMutableArray"), "array")(
+		(id)objc_getClass("NSMutableArray"), SEL_("array"));
+	bool has_content = false;
+	id wins = get(app, "windows");
+	add_visible_windows(arr, wins, &has_content);
 	id scenes = get(app, "connectedScenes");
 	id all = scenes ? get(scenes, "allObjects") : nil;
-	if (all && count(all)) {
-		id arr = SEND(id, (id)objc_getClass("NSMutableArray"), "array")(
-			(id)objc_getClass("NSMutableArray"), SEL_("array"));
-		for (unsigned long i = 0, n = count(all); i < n; i++) {
-			id sw = get(at(all, i), "windows");
-			for (unsigned long j = 0, m = count(sw); j < m; j++) {
-				id w = at(sw, j);
-				if (!getb(w, "isHidden") && getd(w, "alpha") >= 0.01)
-					SEND(void, arr, "addObject:", id)(arr, SEL_("addObject:"), w);
-			}
+	for (unsigned long i = 0, n = count(all); i < n; i++)
+		add_visible_windows(arr, get(at(all, i), "windows"), &has_content);
+	if (!has_content) {
+		Class wc = objc_getClass("UIWindow");
+		if (wc && responds((id)wc, "allWindowsIncludingInternalWindows:onlyVisibleWindows:")) {
+			id iw = SEND(id, (id)wc, "allWindowsIncludingInternalWindows:onlyVisibleWindows:", bool, bool)(
+				(id)wc, SEL_("allWindowsIncludingInternalWindows:onlyVisibleWindows:"), true, true);
+			add_visible_windows(arr, iw, &has_content);
 		}
-		if (count(arr)) return arr;
 	}
-	Class wc = objc_getClass("UIWindow");
-	if (wc && responds((id)wc, "allWindowsIncludingInternalWindows:onlyVisibleWindows:")) {
-		id iw = SEND(id, (id)wc, "allWindowsIncludingInternalWindows:onlyVisibleWindows:", bool, bool)(
-			(id)wc, SEL_("allWindowsIncludingInternalWindows:onlyVisibleWindows:"), true, true);
-		if (iw && count(iw)) return iw;
-	}
-	return wins;
+	return count(arr) ? arr : wins;
 }
 
 // An app: text for the field that has focus, in cmd-<pid>.txt ("insert\n<text>"), inserted as the software
