@@ -34,6 +34,7 @@ typedef struct { double x, y, w, h; } Rect;
 static bool responds(id o, const char *s) { return o && SEND(bool, o, "respondsToSelector:", SEL)(o, SEL_("respondsToSelector:"), SEL_(s)); }
 static id get(id o, const char *s) { return responds(o, s) ? SEND(id, o, s)(o, SEL_(s)) : nil; }
 static bool getb(id o, const char *s) { return responds(o, s) ? SEND(bool, o, s)(o, SEL_(s)) : false; }
+static int geti(id o, const char *s) { return responds(o, s) ? SEND(int, o, s)(o, SEL_(s)) : 0; }
 static long getl(id o, const char *s) { return responds(o, s) ? SEND(long, o, s)(o, SEL_(s)) : 0; }
 static double getd(id o, const char *s) { return responds(o, s) ? SEND(double, o, s)(o, SEL_(s)) : 0; }
 static const char *utf8(id s) {
@@ -126,6 +127,7 @@ static void emit(id e) {
 
 // the web views on screen (their content is in WebContent's answer)
 static Rect g_webviews[16];
+static int g_webview_pids[16];
 static int g_nwebviews;
 
 static long g_visits;  // objects walked in the current dump (reported with its time)
@@ -155,7 +157,10 @@ static void walk(id o, int depth) {
 	if (kind(o, "UIView") && (getb(o, "isHidden") || getd(o, "alpha") < 0.01)) return;
 	if (g_nwebviews < 16 && kind(o, "WKWebView")) {
 		Rect f = frame_of(o);
-		if (f.w > 0 && f.h > 0) g_webviews[g_nwebviews++] = f;
+		if (f.w > 0 && f.h > 0) {
+			g_webview_pids[g_nwebviews] = geti(o, "_webProcessIdentifier");
+			g_webviews[g_nwebviews++] = f;
+		}
 	}
 	if (getb(o, "isAccessibilityElement")) {
 		emit(o);
@@ -574,6 +579,18 @@ static void dump(void *ctx) {
 		char t[160];
 		int n = snprintf(t, sizeof t, "%s[%.1f,%.1f,%.1f,%.1f]", i ? "," : "", g_webviews[i].x, g_webviews[i].y,
 			g_webviews[i].w, g_webviews[i].h);
+		put(t, n);
+	}
+	puts_("],\"webview_pids\":[");
+	int wp = 0;
+	for (int i = 0; i < g_nwebviews; i++) {
+		int wpid = g_webview_pids[i];
+		if (wpid <= 0) continue;
+		bool dup = false;
+		for (int j = 0; j < i; j++) if (g_webview_pids[j] == wpid) { dup = true; break; }
+		if (dup) continue;
+		char t[32];
+		int n = snprintf(t, sizeof t, "%s%d", wp++ ? "," : "", wpid);
 		put(t, n);
 	}
 	puts_("]}\n");

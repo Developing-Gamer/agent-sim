@@ -69,6 +69,9 @@ struct RawDump {
     /// the app's web views on screen: x, y, width, height (screen points)
     #[serde(default)]
     webviews: Vec<[f64; 4]>,
+    /// guest PIDs of the WebContent processes backing the app's visible WKWebViews
+    #[serde(default)]
+    webview_pids: Vec<u32>,
 }
 #[derive(Deserialize, Clone)]
 struct RawWindow {
@@ -166,11 +169,32 @@ fn dump(
     serde_json::from_str(&text).with_context(|| format!("reading {}", file.display()))
 }
 
+/// Narrows WebContent candidates to the guest PIDs backing the foreground app's visible WKWebViews.
+/// Falls back to all WebContent processes when the hook did not report any PIDs (older hooks or cold web views).
+fn filter_web_procs(procs: Vec<(u32, u32)>, webview_pids: &[u32]) -> Vec<(u32, u32)> {
+    if webview_pids.is_empty() {
+        return procs;
+    }
+    procs
+        .into_iter()
+        .filter(|&(_, inner)| webview_pids.contains(&inner))
+        .collect()
+}
+
 /// The elements of the web pages shown in `webviews` (x, y, w, h), in screen points (WebKit reports them so).
-fn web_windows(dev: &Device, dir: &Path, webviews: &[[f64; 4]]) -> Vec<RawWindow> {
+fn web_windows(
+    dev: &Device,
+    dir: &Path,
+    webviews: &[[f64; 4]],
+    webview_pids: &[u32],
+) -> Vec<RawWindow> {
     let Ok(procs) = phone::process_ids(dev, |_, exe| exe == "com.apple.WebKit.WebContent") else {
         return Vec::new();
     };
+    let procs = filter_web_procs(procs, webview_pids);
+    if procs.is_empty() {
+        return Vec::new();
+    }
     // a page still loading or zooming moves under the reading: read again until two readings agree
     let (mut last, mut live) = read_web(dir, &procs, webviews, Duration::from_secs(8));
     for _ in 0..3 {
@@ -350,7 +374,7 @@ pub fn snapshot(dev: &Device) -> Result<Snapshot> {
 
     // web views: their content is in WebKit's WebContent processes, in points from the web view's content origin
     let web = match &app {
-        Some(a) if !a.webviews.is_empty() => web_windows(dev, &dir, &a.webviews),
+        Some(a) if !a.webviews.is_empty() => web_windows(dev, &dir, &a.webviews, &a.webview_pids),
         _ => Vec::new(),
     };
 
@@ -650,5 +674,28 @@ mod tests {
         assert_eq!(format(&s), "notification center\n");
         s.notification_center = false;
         assert_eq!(format(&s), "home screen\n");
+    }
+
+    #[test]
+    fn filter_web_procs_scopes_to_visible_webviews() {
+        let procs = vec![(1001, 24445), (1002, 24999)];
+        assert_eq!(filter_web_procs(procs.clone(), &[]), procs);
+        assert_eq!(
+            filter_web_procs(procs.clone(), &[24999]),
+            vec![(1002, 24999)]
+        );
+        assert!(filter_web_procs(procs, &[99999]).is_empty());
+    }
+
+    #[test]
+    fn raw_dump_deserializes_optional_webview_pids() {
+        let legacy: RawDump =
+            serde_json::from_str(r#"{"process":"App","windows":[],"webviews":[]}"#).unwrap();
+        assert!(legacy.webview_pids.is_empty());
+        let scoped: RawDump = serde_json::from_str(
+            r#"{"process":"SafariViewService","windows":[],"webviews":[[0,0,402,874]],"webview_pids":[24999]}"#,
+        )
+        .unwrap();
+        assert_eq!(scoped.webview_pids, vec![24999]);
     }
 }
