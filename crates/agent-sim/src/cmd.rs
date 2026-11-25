@@ -1525,8 +1525,7 @@ mod tests {
     use super::{
         RELAUNCH_SETTLE, TypeStep, clipboard, drag_progress, launch_args, parse_lat_lon, record_vf,
         rotate, scroll_segment, settle_left, type_steps, upright_bounds, upright_to_panel,
-        validate_key_text,
-        validate_pinch, validate_privacy, validate_push_payload,
+        validate_key_text, validate_pinch, validate_privacy, validate_push_payload,
     };
     use crate::device::Device;
     use std::path::PathBuf;
