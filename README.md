@@ -52,6 +52,10 @@ not stall. `AGENT_SIM_DESKTOP=1` or `0` picks instead.
 `agent-sim setup --fidelity high --device hifi` adds a phone that looks exactly like Apple's simulator (3x, every
 blur and animation) for screenshots; the default draws at 2x with reduced effects and scrolls twice as fast.
 
+To watch a phone, x86Sim's own desktop app shows the phones agent-sim made. On a desktop setup adds it to
+the app menu as "x86Sim" (a standard desktop entry, so GNOME, KDE, Omarchy's Walker and other launchers list it);
+`scripts/desktop-entry.sh` adds it later, `scripts/desktop-entry.sh remove` takes it out.
+
 ## Use it from an agent
 
 As an MCP server:

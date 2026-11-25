@@ -12,6 +12,8 @@
 #   FIDELITY=high    a phone that looks exactly like Apple's simulator: the model's own pixel density ("iPhone 17 Pro",
 #                    3x) and every visual effect (blur, transparency, motion). The default, fast, draws at 2x with
 #                    Reduce Transparency and Reduce Motion on: it scrolls faster (docs/BENCHMARKS.md).
+#   AGENT_SIM_DESKTOP_ENTRY    1 adds x86Sim's desktop app to the app menu (scripts/desktop-entry.sh), 0 does not;
+#                    by default it is added on a desktop (AGENT_SIM_DESKTOP)
 #   AGENT_SIM_PATCH_X86SIM=0   keep x86Sim's own translator (skips the fixes in patches/x86sim)
 #   AGENT_SIM_DESKTOP=1|0      set up for a desktop (1) or a server (0); by default, a desktop when setup runs in a
 #                    local graphical login. A server gets what unattended phones need, with root: the user lingers,
@@ -272,6 +274,18 @@ if [[ $(aot_status) != *"(current)"* ]] || [ ! -e "$calm" ] || [ ! -e "$granted"
 		[[ $(aot_status) == *"(current)"* ]] && break
 	done
 	aot_status
+fi
+
+# x86Sim's desktop app (its launcher) in the app menu, on a desktop (is_desktop)
+desktop_entry=${AGENT_SIM_DESKTOP_ENTRY:-}
+if [ -z "$desktop_entry" ]; then
+	desktop_entry=0
+	is_desktop && desktop_entry=1
+fi
+if [ "$desktop_entry" = 1 ]; then
+	log "Adding x86Sim's desktop app to the app menu"
+	X86SIM_VERSION=$X86SIM_VERSION "$HERE/desktop-entry.sh" install ||
+		echo "setup-vm.sh: the menu entry was not added; the phone works without it" >&2
 fi
 
 log "Done. Start the phone with:  scripts/phone.sh start $DEVICE && scripts/phone.sh wait $DEVICE"
