@@ -93,6 +93,8 @@ The simulator controls Apple's `simctl` has are here too: `appearance dark`, `st
 `rotate right`, `orientation landscapeLeft`, `pinch`, `record -o video.mp4`, `erase`, `logs`, plus x86Sim's `location`, `push`, `privacy` and `addmedia`.
 [docs/PARITY.md](docs/PARITY.md) compares every feature with Apple's Simulator on a Mac.
 
+React Native and Expo apps, development builds with Metro included: [docs/REACT_NATIVE.md](docs/REACT_NATIVE.md).
+
 Device builds run when they are not encrypted. App Store downloads are (FairPlay), so use an Ad Hoc, Development or
 Enterprise export, or build for the simulator.
 
