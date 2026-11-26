@@ -75,12 +75,13 @@ PENV=$CACHE/a64-penv
 LEAN_JOBS="com.apple.sleepd com.apple.assetsd com.apple.passd com.apple.financed com.apple.nanoregistryd
 	com.apple.accountsd com.apple.amsaccountsd com.apple.mediaremoted com.apple.sharingd com.apple.medialibraryd"
 # AGENT_SIM_SERVICES=apps (the default): also every service x86Sim's standard list has that only starts when asked
-# for (Spotlight, notifications, pasteboard, contacts, calendars, StoreKit, Siri's, StatusKit...) and locationd, so
+# for (Spotlight, notifications, pasteboard, contacts, calendars, StoreKit, Siri's, StatusKit...), locationd, and akd
+# (Apple Account: Sign in with Apple and Settings' account sign-in fail without it, not in x86Sim's lists), so
 # apps under test find what they find on a device (docs/BENCHMARKS.md has the cost: a few seconds of boot, about
 # 300 MB and 0.2 cores at rest). =lean: only the services the built-in apps need to open.
 APPS_JOBS="
 	com.apple.assetsubscriptiond com.apple.assistant_cdmd
-	com.apple.AuthenticationServicesCore.AuthenticationServicesAgent com.apple.backgroundassets.user
+	com.apple.akd com.apple.AuthenticationServicesCore.AuthenticationServicesAgent com.apple.backgroundassets.user
 	com.apple.calaccessd com.apple.campo com.apple.contactsd com.apple.CoreAuthentication.daemon
 	com.apple.corespeechd com.apple.corespotlightservice com.apple.ctkd com.apple.DesktopServicesHelper
 	com.apple.devicecheckd com.apple.devicemanagementclient.managedappsd com.apple.dmd com.apple.DragUI.druid
