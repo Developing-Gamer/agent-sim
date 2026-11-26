@@ -11,7 +11,7 @@ Every command takes `--device NAME` (default `p`, or `$AGENT_SIM_DEVICE`).
 ## The loop
 
 1. `agent-sim status`: is a phone running? If not, `agent-sim up` (15-40 s).
-2. `agent-sim install path/to/App.ipa` (or a simulator `.app`), then `agent-sim launch <bundle id>` (add `--env KEY=VALUE` and `-- -arg value` to pass environment variables and launch arguments).
+2. `agent-sim install path/to/App.ipa` (or a simulator `.app`, a `.tar.gz` or `.zip` holding one such as an EAS Build artifact, or an http(s) URL of any of these), then `agent-sim launch <bundle id>` (add `--env KEY=VALUE` and `-- -arg value` to pass environment variables and launch arguments).
    `agent-sim apps` lists installed apps and their bundle ids.
 3. `agent-sim snapshot`: read the screen. One element per line:
    `@e4 button "Sign in" id="login.submit" (201,640)`: reference, role, label, value/id, center point.

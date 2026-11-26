@@ -73,6 +73,7 @@ so an agent sees the result of each step without asking again. For agents that w
 
 ```sh
 agent-sim install MyApp.ipa        # a device build is converted for the simulator; a simulator .app works too
+agent-sim install https://expo.dev/artifacts/eas/<id>.tar.gz   # or an archive (.tar.gz, .zip) holding an .app, by path or URL
 agent-sim launch com.example.myapp
 agent-sim snapshot                 # the screen as text, one element per line (--json for frames, ids, states)
 agent-sim tap @e4                  # an element from the last snapshot; or: tap "Sign in"; or: tap 201 320

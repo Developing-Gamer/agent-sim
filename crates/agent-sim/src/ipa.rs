@@ -202,52 +202,176 @@ fn retag_plist(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Makes an .app the simulator runs from `path` (.app directory, or .ipa).
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum Archive {
+    Zip,
+    Gzip,
+    Tar,
+}
+
+fn is_url(s: &str) -> bool {
+    s.starts_with("https://") || s.starts_with("http://")
+}
+
+/// Downloads `url` into the installs folder, keeping the name its path ends in so the archive type stays visible.
+fn download(url: &str) -> Result<PathBuf> {
+    let dir = crate::phone::home()?.join("installs").join(".downloads");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)?;
+    let dst = dir.join(url_file_name(url));
+    eprintln!("downloading {url}");
+    let ok = Command::new("curl")
+        .args(["-fsSL", "--retry", "2", "-o"])
+        .arg(&dst)
+        .arg(url)
+        .status()
+        .context("downloading (curl)")?;
+    if !ok.success() {
+        bail!("could not download {url}");
+    }
+    Ok(dst)
+}
+
+fn url_file_name(url: &str) -> String {
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    let name = path.rsplit('/').next().unwrap_or("");
+    let name = name.trim_matches('.');
+    if name.is_empty() || name.contains("..") || path.matches('/').count() < 3 {
+        "download".into()
+    } else {
+        name.into()
+    }
+}
+
+/// What a file is by its first bytes, since a download's name need not say.
+fn archive_kind(path: &Path) -> Result<Archive> {
+    let mut head = [0u8; 262];
+    let n = {
+        use std::io::Read;
+        let mut f = std::fs::File::open(path)?;
+        let mut n = 0;
+        while n < head.len() {
+            match f.read(&mut head[n..])? {
+                0 => break,
+                k => n += k,
+            }
+        }
+        n
+    };
+    match &head[..n] {
+        [b'P', b'K', 3, 4, ..] => Ok(Archive::Zip),
+        [0x1f, 0x8b, ..] => Ok(Archive::Gzip),
+        h if h.len() >= 262 && &h[257..262] == b"ustar" => Ok(Archive::Tar),
+        _ => bail!(
+            "{} is not an .ipa or an archive (zip, tar or tar.gz); install also takes an .app folder or a URL",
+            path.display()
+        ),
+    }
+}
+
+fn archive_stem(path: &Path) -> String {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let lower = name.to_lowercase();
+    for ext in [".tar.gz", ".tgz", ".tar", ".zip", ".ipa"] {
+        if lower.ends_with(ext) && lower.len() > ext.len() {
+            return name[..name.len() - ext.len()].to_string();
+        }
+    }
+    name.into_owned()
+}
+
+fn unpack(path: &Path, kind: Archive, work: &Path) -> Result<()> {
+    let ok = match kind {
+        Archive::Zip => Command::new("python3")
+            .args(["-I", "-m", "zipfile", "-e"])
+            .arg(path)
+            .arg(work)
+            .status()
+            .context("unzipping (python3)")?,
+        Archive::Gzip | Archive::Tar => Command::new("tar")
+            .arg(if kind == Archive::Gzip { "-xzf" } else { "-xf" })
+            .arg(path)
+            .arg("-C")
+            .arg(work)
+            .status()
+            .context("unpacking (tar)")?,
+    };
+    if !ok.success() {
+        bail!("{} could not be unpacked", path.display());
+    }
+    Ok(())
+}
+
+/// The one .app in an unpacked archive: at its top, in an .ipa's Payload, or a folder or two down.
+fn find_app(dir: &Path) -> Result<PathBuf> {
+    fn look(dir: &Path, depth: u32, out: &mut Vec<PathBuf>) {
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in rd.flatten() {
+            let p = e.path();
+            if !e.file_type().is_ok_and(|t| t.is_dir()) || e.file_name() == "__MACOSX" {
+                continue;
+            }
+            if p.extension().is_some_and(|x| x == "app") {
+                out.push(p);
+            } else if depth < 3 {
+                look(&p, depth + 1, out);
+            }
+        }
+    }
+    let mut apps = Vec::new();
+    look(dir, 1, &mut apps);
+    apps.sort();
+    match apps.len() {
+        0 => bail!("no .app inside"),
+        1 => Ok(apps.remove(0)),
+        _ => bail!(
+            "more than one .app inside: {}",
+            apps.iter()
+                .map(|a| a.strip_prefix(dir).unwrap_or(a).display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+/// Makes an .app the simulator runs from `path`: an .app directory, an .ipa, an archive holding an .app (.tar.gz, .tgz,
+/// .tar or .zip, as EAS Build and CI artifacts come), or an http(s) URL of any of those.
 pub fn prepare(path: &Path) -> Result<App> {
+    let downloaded;
+    let path = match path.to_str().filter(|s| is_url(s)) {
+        Some(url) => {
+            downloaded = download(url)?;
+            downloaded.as_path()
+        }
+        None => path,
+    };
     let path =
         std::fs::canonicalize(path).with_context(|| format!("{} not found", path.display()))?;
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-    let app = match ext.as_str() {
-        "app" => {
-            // retag a copy, so a device .app the user points at is left as it was
-            let work = crate::phone::home()?.join("installs");
-            std::fs::create_dir_all(&work)?;
-            let dst = work.join(path.file_name().unwrap());
-            let _ = std::fs::remove_dir_all(&dst);
-            let ok = Command::new("cp").arg("-a").arg(&path).arg(&dst).status()?;
-            if !ok.success() {
-                bail!("copying {}", path.display());
-            }
-            dst
+    let app = if path.is_dir() {
+        if path.extension().is_none_or(|e| e != "app") {
+            bail!("install takes an .app folder, an .ipa, an archive holding an .app, or a URL");
         }
-        "ipa" => {
-            let work = crate::phone::home()?
-                .join("installs")
-                .join(path.file_stem().unwrap());
-            let _ = std::fs::remove_dir_all(&work);
-            std::fs::create_dir_all(&work)?;
-            let ok = Command::new("python3")
-                .args(["-I", "-m", "zipfile", "-e"])
-                .arg(&path)
-                .arg(&work)
-                .status()
-                .context("unzipping the .ipa (python3)")?;
-            if !ok.success() {
-                bail!("{} is not a readable .ipa (zip)", path.display());
-            }
-            let payload = work.join("Payload");
-            std::fs::read_dir(&payload)
-                .with_context(|| format!("{} has no Payload folder", path.display()))?
-                .flatten()
-                .map(|e| e.path())
-                .find(|p| p.extension().is_some_and(|e| e == "app"))
-                .context("the .ipa's Payload has no .app")?
+        // retag a copy, so a device .app the user points at is left as it was
+        let work = crate::phone::home()?.join("installs");
+        std::fs::create_dir_all(&work)?;
+        let dst = work.join(path.file_name().unwrap());
+        let _ = std::fs::remove_dir_all(&dst);
+        let ok = Command::new("cp").arg("-a").arg(&path).arg(&dst).status()?;
+        if !ok.success() {
+            bail!("copying {}", path.display());
         }
-        _ => bail!("install takes an .app folder or an .ipa file"),
+        dst
+    } else {
+        let kind = archive_kind(&path)?;
+        let work = crate::phone::home()?
+            .join("installs")
+            .join(archive_stem(&path));
+        let _ = std::fs::remove_dir_all(&work);
+        std::fs::create_dir_all(&work)?;
+        unpack(&path, kind, &work)?;
+        find_app(&work).with_context(|| format!("installing {}", path.display()))?
     };
     let mut files = Vec::new();
     walk(&app, &mut files)?;
@@ -357,6 +481,90 @@ mod tests {
         let mut v = platform.to_le_bytes().to_vec();
         v.extend_from_slice(&[0u8; 12]);
         v
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("agent-sim-ipa-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn download_names_come_from_the_url_path() {
+        assert_eq!(
+            url_file_name("https://expo.dev/artifacts/eas/abc123.tar.gz"),
+            "abc123.tar.gz"
+        );
+        assert_eq!(url_file_name("https://x.io/b/App.ipa?sig=1#f"), "App.ipa");
+        assert_eq!(url_file_name("https://x.io"), "download");
+        assert_eq!(url_file_name("https://x.io/b/"), "download");
+        assert_eq!(url_file_name("https://x.io/b/.."), "download");
+    }
+
+    #[test]
+    fn archive_stems_drop_the_archive_extension() {
+        assert_eq!(archive_stem(Path::new("/d/Isokratis.tar.gz")), "Isokratis");
+        assert_eq!(archive_stem(Path::new("/d/App.TGZ")), "App");
+        assert_eq!(archive_stem(Path::new("/d/App.ipa")), "App");
+        assert_eq!(archive_stem(Path::new("/d/download")), "download");
+    }
+
+    #[test]
+    fn archives_are_told_apart_by_their_first_bytes() {
+        let d = scratch("kind");
+        let write = |n: &str, b: &[u8]| {
+            let p = d.join(n);
+            std::fs::write(&p, b).unwrap();
+            p
+        };
+        assert_eq!(
+            archive_kind(&write("a", b"PK\x03\x04rest")).unwrap(),
+            Archive::Zip
+        );
+        assert_eq!(
+            archive_kind(&write("b", &[0x1f, 0x8b, 8, 0])).unwrap(),
+            Archive::Gzip
+        );
+        let mut tar = vec![0u8; 512];
+        tar[257..262].copy_from_slice(b"ustar");
+        assert_eq!(archive_kind(&write("c", &tar)).unwrap(), Archive::Tar);
+        assert!(archive_kind(&write("d", b"<html>not found</html>")).is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn an_eas_simulator_tarball_unpacks_to_its_app() {
+        let d = scratch("tgz");
+        let app = d.join("src/Isokratis.app");
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::write(app.join("Info.plist"), b"x").unwrap();
+        let tgz = d.join("build.tar.gz");
+        let ok = Command::new("tar")
+            .arg("-czf")
+            .arg(&tgz)
+            .arg("-C")
+            .arg(d.join("src"))
+            .arg("Isokratis.app")
+            .status()
+            .unwrap();
+        assert!(ok.success());
+        let out = d.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        unpack(&tgz, archive_kind(&tgz).unwrap(), &out).unwrap();
+        assert_eq!(find_app(&out).unwrap(), out.join("Isokratis.app"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn find_app_looks_in_payload_and_refuses_two() {
+        let d = scratch("find");
+        std::fs::create_dir_all(d.join("Payload/Runner.app/Watch/W.app")).unwrap();
+        std::fs::create_dir_all(d.join("__MACOSX/Other.app")).unwrap();
+        assert_eq!(find_app(&d).unwrap(), d.join("Payload/Runner.app"));
+        std::fs::create_dir_all(d.join("Second.app")).unwrap();
+        assert!(find_app(&d).is_err());
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

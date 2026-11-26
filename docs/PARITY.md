@@ -40,7 +40,7 @@ Status: **same** as on a Mac, **close** (works, with a noted difference), **gap*
 
 | Feature | Mac | agent-sim | Status |
 |---|---|---|---|
-| Install a simulator build (`simctl install`) | yes | `agent-sim install App.app` | same |
+| Install a simulator build (`simctl install`) | yes | `agent-sim install App.app`, or an archive or URL of one (an EAS Build artifact) | same |
 | Install a device build (.ipa) | no (needs a device) | `agent-sim install App.ipa`, binaries retagged for the simulator; App Store builds refused (encrypted) | better |
 | Launch, terminate, list apps | yes | `launch`, `terminate`, `apps` | same |
 | Deep links and URLs (`simctl openurl`) | yes | `agent-sim open`; `prefs:` links checked | same |
