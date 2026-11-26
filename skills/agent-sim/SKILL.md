@@ -33,6 +33,8 @@ Every command takes `--device NAME` (default `p`, or `$AGENT_SIM_DEVICE`).
 - A tap on an element that does not react: check it is not `disabled` in the snapshot, or scroll it into view.
 - App Store downloads are encrypted and cannot be installed; use an Ad Hoc / Development export or a simulator
   build.
+- To give an app documents to open, `agent-sim files push report.pdf --to Inbox` copies them into the Files app's
+  On My iPhone (`files ls`, `files rm` to check and clean up); then pick them in the app's document picker.
 - `agent-sim pool take` hands out an already booted phone when several agents share a machine; give it back with
   `agent-sim pool release NAME`.
 - As an MCP server (`agent-sim mcp`) the same commands are tools, and actions return the next snapshot.

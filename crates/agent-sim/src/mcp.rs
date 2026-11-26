@@ -192,6 +192,18 @@ fn tools() -> Value {
             &["paths"]
         ),
         tool(
+            "files",
+            "The Files app's On My iPhone: copy files or folders from this machine into it (action=\"push\" with paths, optionally into the folder to), list a folder (action=\"ls\", optionally dir) or remove one (action=\"rm\" with path). Use it to give apps documents to open.",
+            json!({
+                "action": {"type": "string", "enum": ["push", "ls", "rm"]},
+                "paths": {"type": "array", "items": {"type": "string"}, "description": "push: file or folder paths on this machine"},
+                "to": {"type": "string", "description": "push: folder inside On My iPhone, created if missing"},
+                "dir": {"type": "string", "description": "ls: folder inside On My iPhone (default its top)"},
+                "path": {"type": "string", "description": "rm: file or folder inside On My iPhone"}
+            }),
+            &["action"]
+        ),
+        tool(
             "privacy",
             "Grant, revoke or reset an app's privacy permission without a prompt (as simctl privacy).",
             json!({
@@ -451,6 +463,32 @@ fn call(default_device: &str, name: &str, args: &Value) -> Result<Value> {
                 .collect::<Result<_>>()?;
             text(cmd::addmedia(&dev, &paths)?)
         }
+        "files" => match s(args, "action")? {
+            "push" => {
+                let paths: Vec<PathBuf> = args
+                    .get("paths")
+                    .and_then(Value::as_array)
+                    .context("push needs an array paths")?
+                    .iter()
+                    .map(|v| {
+                        v.as_str()
+                            .map(PathBuf::from)
+                            .context("paths entries must be strings")
+                    })
+                    .collect::<Result<_>>()?;
+                text(crate::files::push(
+                    &dev,
+                    &paths,
+                    args.get("to").and_then(Value::as_str),
+                )?)
+            }
+            "ls" => text(crate::files::ls(
+                &dev,
+                args.get("dir").and_then(Value::as_str),
+            )?),
+            "rm" => text(crate::files::rm(&dev, s(args, "path")?)?),
+            other => bail!("files action must be push, ls or rm (got {other:?})"),
+        },
         "privacy" => text(cmd::privacy(
             &dev,
             s(args, "action")?,
@@ -586,6 +624,7 @@ mod tests {
             "wait_for",
             "location",
             "addmedia",
+            "files",
             "privacy",
             "push",
             "boot",

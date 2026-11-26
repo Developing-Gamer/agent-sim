@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `files push PATH... [--to DIR]`, `files ls [DIR]` and `files rm PATH` (and the MCP tool `files`) put documents in the
+  Files app's On My iPhone, list and remove them. Names are written decomposed (NFD), so files with accented or
+  non-Latin names open; copied in by hand with the composed names Linux tools write, they were listed but "not found".
 - `snapshot`, `tap`, `swipe`, `scroll` and `record` work in landscape: elements right of the portrait width are no
   longer dropped, taps land where they are aimed, and recordings come out upright. Portrait-locked apps stay portrait.
 - `tap "Settings" --hold-ms 900` no longer reads the flag as part of the target; `type --keys` no longer leaves Shift

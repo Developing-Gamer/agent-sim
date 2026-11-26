@@ -64,6 +64,7 @@ Status: **same** as on a Mac, **close** (works, with a noted difference), **gap*
 | Software keyboard on screen | toggled with Cmd-K | hidden (a hardware keyboard is attached, as on a Mac by default) | gap |
 | Location (`simctl location`) | yes | yes; apps get prompts and positions | same |
 | Photos (`simctl addmedia`) | yes | yes | same |
+| Documents in the Files app | drag a file onto the window | `agent-sim files push`, `files ls`, `files rm` (On My iPhone) | same |
 | Push notifications (`simctl push`) | yes, to apps allowed to notify | the same rule; untested end to end with an app that asked | close |
 | Permissions (`simctl privacy`) | yes | yes; stale prompts of quit apps dismissed | same |
 | Face ID / Touch ID | yes | enroll, match, no match | same |
