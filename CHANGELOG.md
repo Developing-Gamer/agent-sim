@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `tap "TEXT"`, `wait` and the MCP tools that find elements by text match accented and non-Latin text whatever its
+  Unicode normalization: the Files app and other Foundation-backed labels come decomposed (NFD), so a typed (NFC)
+  `tap "Απολυτίκιο"` found nothing.
 - `snapshot`, `tap`, `swipe`, `scroll` and `record` work in landscape: elements right of the portrait width are no
   longer dropped, taps land where they are aimed, and recordings come out upright. Portrait-locked apps stay portrait.
 - `tap "Settings" --hold-ms 900` no longer reads the flag as part of the target; `type --keys` no longer leaves Shift
