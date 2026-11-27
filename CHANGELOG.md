@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Sign in with Apple reaches Apple's own sheet (or its "Sign in to your Apple Account" alert on a phone without one)
+  instead of failing at once with ASAuthorizationError 1000: the `apps` service set starts Apple's account daemon,
+  akd, which only runs when asked for.
 - `snapshot`, `tap`, `swipe`, `scroll` and `record` work in landscape: elements right of the portrait width are no
   longer dropped, taps land where they are aimed, and recordings come out upright. Portrait-locked apps stay portrait.
 - `tap "Settings" --hold-ms 900` no longer reads the flag as part of the target; `type --keys` no longer leaves Shift
