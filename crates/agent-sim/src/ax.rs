@@ -43,7 +43,7 @@ impl Element {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Snapshot {
-    /// the app in front (bundle id), or None on the home screen / lock screen
+    /// the app in front (bundle id), or None on the home screen / lock screen / notification center / app switcher
     pub app: Option<String>,
     /// the device is on the Lock Screen (Cover Sheet UI locked): no app is in front
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -51,7 +51,10 @@ pub struct Snapshot {
     /// Notification Center (Cover Sheet pulled down while unlocked) covers the screen
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub notification_center: bool,
-    /// hosted modal UI presented over the app (for example ExtensionKit PhotosPicker), when active
+    /// the iOS App Switcher is open over the home screen or foreground app
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub switcher: bool,
+    /// hosted modal UI presented over the app (for example ExtensionKit PhotosPicker or Share Sheet), when active
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub modal: Option<String>,
     /// the hosted modal did not answer (still starting, or busy)
@@ -66,6 +69,15 @@ pub struct Snapshot {
     pub elements: Vec<Element>,
 }
 
+#[derive(Deserialize, Clone)]
+struct HostedScene {
+    pid: u32,
+    #[serde(default)]
+    #[allow(dead_code)]
+    bundle: String,
+    frame: [f64; 4],
+}
+
 #[derive(Deserialize)]
 struct RawDump {
     process: String,
@@ -76,6 +88,9 @@ struct RawDump {
     /// guest PIDs of the WebContent processes backing the app's visible WKWebViews
     #[serde(default)]
     webview_pids: Vec<u32>,
+    /// remote scenes hosted inside the app's visible UI (for example UIActivityViewController / SharingUIService)
+    #[serde(default)]
+    hosted_scenes: Vec<HostedScene>,
     /// interface orientation reported by the process's UIWindowScene
     #[serde(default)]
     orientation: Option<String>,
@@ -303,6 +318,39 @@ fn on_screen(frame: [f64; 4], bounds: (f64, f64)) -> bool {
     cx >= 0.0 && cy >= 0.0 && cx <= bounds.0 && cy <= bounds.1
 }
 
+/// Translates scene-local element frames (for example SharingUIService inside a popover) into screen points
+/// using the host `_UIScenePresentationView`'s frame. Elements that already lie outside the scene's local
+/// bounds are left untouched.
+fn translate_scene_windows(windows: &mut [RawWindow], scene_frame: [f64; 4]) {
+    let [sx, sy, sw, sh] = scene_frame;
+    if sx.abs() <= 1.0 && sy.abs() <= 1.0 {
+        return;
+    }
+    let already_screen_coords = windows.iter().flat_map(|w| w.elements.iter()).any(|e| {
+        let (cx, cy) = (e.frame[0] + e.frame[2] / 2.0, e.frame[1] + e.frame[3] / 2.0);
+        cx > sw + 2.0 || cy > sh + 2.0
+    });
+    if already_screen_coords {
+        return;
+    }
+    for w in windows {
+        for e in &mut w.elements {
+            e.frame[0] += sx;
+            e.frame[1] += sy;
+        }
+    }
+}
+
+/// True when SpringBoard's App Switcher is showing app cards over the occluded Home Screen or foreground app.
+fn is_app_switcher(springboard: &RawDump) -> bool {
+    springboard.windows.iter().any(|w| {
+        w.class == "SBMainSwitcherWindow"
+            && w.elements
+                .iter()
+                .any(|e| e.id.as_deref().is_some_and(|i| i.starts_with("card:")))
+    })
+}
+
 /// Effective interface orientation for bounds checks and input mapping.
 /// Prefers the foreground window scene's reported interface orientation so portrait-locked apps
 /// (and the iPhone Home Screen) keep portrait coordinates even when the physical device is turned
@@ -375,6 +423,13 @@ pub fn snapshot(dev: &Device) -> Result<Snapshot> {
     let front: Front = serde_json::from_str(&std::fs::read_to_string(dir.join("front.json"))?)?;
     let mut app_not_answering = false;
     let mut modal_not_answering = false;
+    // System overlay precedence (highest to lowest):
+    // 1. Lock Screen (`locked`)
+    // 2. Notification Center (`notification_center`)
+    // 3. App Switcher (`switcher`)
+    // 4. Hosted modal (`modal` / `scene_modals`) over the foreground app
+    // 5. Foreground app (`app`)
+    // 6. Home Screen
     let locked = front.locked;
     let notification_center = !locked
         && springboard
@@ -382,7 +437,8 @@ pub fn snapshot(dev: &Device) -> Result<Snapshot> {
             .iter()
             .any(|w| w.class.contains("CoverSheet") && !w.elements.is_empty());
     let cover_sheet = locked || notification_center;
-    let modal = if front.hosted_pid > 0 && !cover_sheet {
+    let switcher = !cover_sheet && is_app_switcher(&springboard);
+    let modal = if front.hosted_pid > 0 && !cover_sheet && !switcher {
         let p = front.hosted_pid;
         let pids = phone::processes(dev, |inner, _| inner == p)?;
         match pids.first() {
@@ -404,7 +460,7 @@ pub fn snapshot(dev: &Device) -> Result<Snapshot> {
         None
     };
 
-    let app = if cover_sheet || modal.is_some() || modal_not_answering {
+    let app = if cover_sheet || switcher || modal.is_some() || modal_not_answering {
         None
     } else {
         match (front.pid, &front.bundle) {
@@ -432,14 +488,39 @@ pub fn snapshot(dev: &Device) -> Result<Snapshot> {
         }
     };
 
+    // Remote FBScenes hosted inside the app's visible view hierarchy (for example third-party UIActivityViewController
+    // popovers hosted by SharingUIService, which do not appear in RunningBoard's UISceneHosting endowments).
+    let mut scene_modals: Vec<RawDump> = Vec::new();
+    if let Some(a) = &app {
+        for scene in a.hosted_scenes.iter().rev() {
+            let Ok(pids) = phone::processes(dev, |inner, _| inner == scene.pid) else {
+                continue;
+            };
+            let Some(&linux) = pids.first() else {
+                continue;
+            };
+            if let Ok(mut d) = dump(
+                &dir,
+                (linux, scene.pid),
+                &format!("ax-{}.json", scene.pid),
+                Duration::from_secs(3),
+            ) && d.windows.iter().any(|w| !w.elements.is_empty())
+            {
+                translate_scene_windows(&mut d.windows, scene.frame);
+                scene_modals.push(d);
+            }
+        }
+    }
+
     // web views: their content is in WebKit's WebContent processes, in points from the web view's content origin
     let web = match &app {
         Some(a) if !a.webviews.is_empty() => web_windows(dev, &dir, &a.webviews, &a.webview_pids),
         _ => Vec::new(),
     };
 
-    // reading order: system alerts (and the Cover Sheet when locked) over everything, hosted modal (when active),
-    // web content, the app, the home screen when unlocked with no app in front, the status bar
+    // reading order: system alerts (and the Cover Sheet when locked / Notification Center) over everything,
+    // hosted modal (when active), embedded remote scenes (such as Share Sheet), web content, the app,
+    // the app switcher or home screen when unlocked with no app in front, the status bar
     let mut parts: Vec<(&str, &RawWindow)> = Vec::new();
     let sb_windows = |pred: &dyn Fn(&RawWindow) -> bool| -> Vec<(&str, &RawWindow)> {
         let mut v: Vec<_> = springboard
@@ -461,6 +542,11 @@ pub fn snapshot(dev: &Device) -> Result<Snapshot> {
         v.sort_by(|x, y| y.1.level.total_cmp(&x.1.level));
         parts.extend(v);
     } else if !modal_not_answering {
+        for m in &scene_modals {
+            let mut v: Vec<_> = m.windows.iter().map(|w| (m.process.as_str(), w)).collect();
+            v.sort_by(|x, y| y.1.level.total_cmp(&x.1.level));
+            parts.extend(v);
+        }
         parts.extend(web.iter().map(|w| ("WebContent", w)));
         if let Some(a) = &app {
             let mut v: Vec<_> = a.windows.iter().map(|w| (a.process.as_str(), w)).collect();
@@ -468,14 +554,16 @@ pub fn snapshot(dev: &Device) -> Result<Snapshot> {
             parts.extend(v);
         } else if !app_not_answering {
             parts.extend(sb_windows(&|w| {
-                w.level <= 1000.0 && !w.class.contains("StatusBar")
+                w.level <= 1000.0
+                    && !w.class.contains("StatusBar")
+                    && (!switcher || !(w.class.contains("HomeScreen") || w.class.contains("Dock")))
             }));
         }
     }
     parts.extend(sb_windows(&|w| w.class.contains("StatusBar")));
 
     let screen = phone::Screen::of(dev)?;
-    let reported_orient = if locked {
+    let reported_orient = if cover_sheet || switcher {
         springboard.orientation.as_deref()
     } else {
         modal
@@ -520,17 +608,22 @@ pub fn snapshot(dev: &Device) -> Result<Snapshot> {
             });
         }
     }
-    let modal_name = modal.as_ref().map(|m| m.process.clone()).or_else(|| {
-        modal_not_answering
-            .then(|| front.hosted_scene.clone())
-            .flatten()
-    });
+    let modal_name = modal
+        .as_ref()
+        .or_else(|| scene_modals.first())
+        .map(|m| m.process.clone())
+        .or_else(|| {
+            modal_not_answering
+                .then(|| front.hosted_scene.clone())
+                .flatten()
+        });
     let snap = Snapshot {
         app: front.bundle.filter(|_| {
             app.is_some() || app_not_answering || modal.is_some() || modal_not_answering
         }),
         locked,
         notification_center,
+        switcher,
         modal: modal_name,
         modal_not_answering,
         app_not_answering,
@@ -569,11 +662,20 @@ fn quote(s: &str) -> String {
 }
 
 /// One line per element: `@e3 button "General"`, with its value, states and center point.
+///
+/// Header precedence (highest overlay first):
+/// 1. `lock screen` (`locked`)
+/// 2. `notification center` (`notification_center`)
+/// 3. `app switcher` (`switcher`)
+/// 4. `app <bundle> (modal ...)` / `app <bundle>`
+/// 5. `home screen`
 pub fn format(s: &Snapshot) -> String {
     let header = if s.locked {
         "lock screen".to_string()
     } else if s.notification_center {
         "notification center".to_string()
+    } else if s.switcher {
+        "app switcher".to_string()
     } else {
         match &s.app {
             Some(a) if s.modal_not_answering => format!(
@@ -694,6 +796,7 @@ mod tests {
             app: None,
             locked: false,
             notification_center: false,
+            switcher: false,
             modal: None,
             modal_not_answering: false,
             app_not_answering: false,
@@ -715,6 +818,7 @@ mod tests {
             app: None,
             locked: false,
             notification_center: false,
+            switcher: false,
             modal: None,
             modal_not_answering: false,
             app_not_answering: false,
@@ -743,6 +847,7 @@ mod tests {
             app: Some("com.example.app".into()),
             locked: false,
             notification_center: false,
+            switcher: false,
             modal: Some("PhotosPicker".into()),
             modal_not_answering: false,
             app_not_answering: false,
@@ -757,6 +862,7 @@ mod tests {
             app: Some("com.example.app".into()),
             locked: false,
             notification_center: false,
+            switcher: false,
             modal: Some("PhotosPicker".into()),
             modal_not_answering: true,
             app_not_answering: false,
@@ -767,12 +873,14 @@ mod tests {
     }
 
     #[test]
-    fn format_distinguishes_lock_screen_notification_center_and_home_screen() {
+    fn format_header_precedence() {
+        // Explicit precedence: lock screen > notification center > app switcher > app (modal) > app > home screen
         let mut s = Snapshot {
-            app: None,
+            app: Some("com.example.app".into()),
             locked: true,
-            notification_center: false,
-            modal: None,
+            notification_center: true,
+            switcher: true,
+            modal: Some("SharingUIService".into()),
             modal_not_answering: false,
             app_not_answering: false,
             orientation: None,
@@ -780,9 +888,14 @@ mod tests {
         };
         assert_eq!(format(&s), "lock screen\n");
         s.locked = false;
-        s.notification_center = true;
         assert_eq!(format(&s), "notification center\n");
         s.notification_center = false;
+        assert_eq!(format(&s), "app switcher\n");
+        s.switcher = false;
+        assert_eq!(format(&s), "app com.example.app (modal SharingUIService)\n");
+        s.modal = None;
+        assert_eq!(format(&s), "app com.example.app\n");
+        s.app = None;
         assert_eq!(format(&s), "home screen\n");
     }
 
@@ -894,5 +1007,76 @@ mod tests {
             resolve_orientation(None, "landscapeLeft", scr, &[("Safari", &landscape_win)]),
             "landscapeLeft"
         );
+    }
+
+    #[test]
+    fn translate_scene_windows_offsets_popover_local_frames() {
+        let mut wins = vec![RawWindow {
+            class: "_UIHostedWindow".into(),
+            level: 0.0,
+            elements: vec![RawElement {
+                label: Some("Copy".into()),
+                value: None,
+                hint: None,
+                id: None,
+                traits: vec!["button".into()],
+                frame: [19.5, 229.5, 82.0, 134.5],
+            }],
+        }];
+        translate_scene_windows(&mut wins, [9.0, 501.0, 384.0, 364.0]);
+        assert_eq!(wins[0].elements[0].frame, [28.5, 730.5, 82.0, 134.5]);
+        // Running again on already screen-space coordinates must not double-offset
+        translate_scene_windows(&mut wins, [9.0, 501.0, 384.0, 364.0]);
+        assert_eq!(wins[0].elements[0].frame, [28.5, 730.5, 82.0, 134.5]);
+    }
+
+    #[test]
+    fn detects_app_switcher_from_main_switcher_cards() {
+        let dump: RawDump = serde_json::from_str(
+            r#"{
+                "process": "SpringBoard",
+                "windows": [
+                    {
+                        "class": "SBMainSwitcherWindow",
+                        "level": 5,
+                        "elements": [{"label": "Settings", "id": "card:com.apple.Preferences:scene", "traits": [], "frame": [60, 120, 280, 600]}]
+                    },
+                    {
+                        "class": "SBHomeScreenWindow",
+                        "level": -2,
+                        "elements": [{"label": "Safari", "traits": [], "frame": [20, 700, 60, 60]}]
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+        assert!(is_app_switcher(&dump));
+        let home: RawDump = serde_json::from_str(
+            r#"{
+                "process": "SpringBoard",
+                "windows": [
+                    {"class": "SBMainSwitcherWindow", "level": 5, "elements": []},
+                    {"class": "SBHomeScreenWindow", "level": -2, "elements": [{"label": "Safari", "traits": [], "frame": [20, 700, 60, 60]}]}
+                ]
+            }"#,
+        )
+        .unwrap();
+        assert!(!is_app_switcher(&home));
+    }
+
+    #[test]
+    fn raw_dump_deserializes_hosted_scenes() {
+        let dump: RawDump = serde_json::from_str(
+            r#"{
+                "process": "DemoApp",
+                "windows": [],
+                "hosted_scenes": [{"pid": 22984, "bundle": "com.apple.SharingUIService", "frame": [9.0, 501.0, 384.0, 364.0]}]
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(dump.hosted_scenes.len(), 1);
+        assert_eq!(dump.hosted_scenes[0].pid, 22984);
+        assert_eq!(dump.hosted_scenes[0].bundle, "com.apple.SharingUIService");
+        assert_eq!(dump.hosted_scenes[0].frame, [9.0, 501.0, 384.0, 364.0]);
     }
 }

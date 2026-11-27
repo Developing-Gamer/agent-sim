@@ -131,6 +131,16 @@ static Rect g_webviews[16];
 static int g_webview_pids[16];
 static int g_nwebviews;
 
+// remote FBScenes hosted inside this app (such as UIActivityViewController's SharingUIService popover)
+typedef struct {
+	int pid;
+	char bundle[128];
+	Rect frame;
+} HostedScene;
+static HostedScene g_hosted[16];
+static int g_nhosted;
+static bool g_is_springboard;
+
 static long g_visits;  // objects walked in the current dump (reported with its time)
 static double g_sent;  // when the CLI asked (Unix ms, from req-<pid>), to report how long the request waited
 static double unix_ms(void) {
@@ -151,11 +161,62 @@ static double ms_now(void) {
 	return t.tv_sec * 1e3 + t.tv_nsec / 1e6;
 }
 
+static bool is_visible(id o) {
+	if (!o) return false;
+	if (getb(o, "accessibilityElementsHidden")) return false;
+	if (kind(o, "UIView") && (getb(o, "isHidden") || getd(o, "alpha") < 0.01)) return false;
+	return true;
+}
+
+// VoiceOver's accessibilityViewIsModal hides sibling elements behind the modal container while keeping
+// siblings presented above it (for example a _UIPopoverView sitting above a modal _UIPopoverDimmingView).
+static unsigned long modal_start(id arr, unsigned long n) {
+	unsigned long start = 0;
+	for (unsigned long i = 0; i < n; i++) {
+		id c = at(arr, i);
+		if (!is_visible(c) || !getb(c, "accessibilityViewIsModal")) continue;
+		Rect f = frame_of(c);
+		if (f.w > 0 && f.h > 0) start = i;
+	}
+	return start;
+}
+
+static void record_hosted_scene(id o) {
+	if (g_nhosted >= 16) return;
+	Rect f = frame_of(o);
+	if (f.w <= 0 || f.h <= 0) return;
+	id presenter = get(o, "presenter");
+	id scene = presenter ? get(presenter, "scene") : nil;
+	if (!scene) return;
+	int pid = 0;
+	const char *bundle = NULL;
+	id cp = get(scene, "clientProcess");
+	if (cp) {
+		pid = geti(cp, "pid");
+		bundle = utf8(get(cp, "bundleIdentifier"));
+	}
+	if (pid <= 0) {
+		id ch = get(scene, "clientHandle");
+		id ph = ch ? get(ch, "processHandle") : nil;
+		if (ph) pid = geti(ph, "pid");
+		if (!bundle && ch) bundle = utf8(get(ch, "bundleIdentifier"));
+	}
+	if (pid <= 0 || pid == getpid()) return;
+	if (bundle && strstr(bundle, "InputUI")) return;
+	for (int i = 0; i < g_nhosted; i++)
+		if (g_hosted[i].pid == pid) return;
+	g_hosted[g_nhosted].pid = pid;
+	snprintf(g_hosted[g_nhosted].bundle, sizeof g_hosted[g_nhosted].bundle, "%s", bundle ? bundle : "");
+	g_hosted[g_nhosted].frame = f;
+	g_nhosted++;
+}
+
 static void walk(id o, int depth) {
 	if (!o || depth > 60 || emitted > 2000) return;
 	g_visits++;
-	if (getb(o, "accessibilityElementsHidden")) return;
-	if (kind(o, "UIView") && (getb(o, "isHidden") || getd(o, "alpha") < 0.01)) return;
+	if (!is_visible(o)) return;
+	if (!g_is_springboard && g_nhosted < 16 && kind(o, "_UIScenePresentationView"))
+		record_hosted_scene(o);
 	if (g_nwebviews < 16 && kind(o, "WKWebView")) {
 		Rect f = frame_of(o);
 		if (f.w > 0 && f.h > 0) {
@@ -169,7 +230,8 @@ static void walk(id o, int depth) {
 	}
 	id kids = get(o, "accessibilityElements");
 	if (kids && count(kids)) {
-		for (unsigned long i = 0, n = count(kids); i < n; i++) walk(at(kids, i), depth + 1);
+		unsigned long n = count(kids);
+		for (unsigned long i = modal_start(kids, n); i < n; i++) walk(at(kids, i), depth + 1);
 		return;
 	}
 	long n = getl(o, "accessibilityElementCount");
@@ -180,7 +242,8 @@ static void walk(id o, int depth) {
 	}
 	if (kind(o, "UIView")) {
 		id subs = get(o, "subviews");
-		for (unsigned long i = 0, m = count(subs); i < m; i++) walk(at(subs, i), depth + 1);
+		unsigned long m = count(subs);
+		for (unsigned long i = modal_start(subs, m); i < m; i++) walk(at(subs, i), depth + 1);
 	}
 }
 
@@ -590,7 +653,10 @@ static void dump(void *ctx) {
 	id wins = app_windows(app);
 	int w = 0;
 	const char *orient = NULL;
+	bool sb = !strcmp(getprogname(), "SpringBoard");
+	g_is_springboard = sb;
 	g_nwebviews = 0;
+	g_nhosted = 0;
 	for (unsigned long i = 0, n = count(wins); i < n; i++) {
 		id win = at(wins, i);
 		if (getb(win, "isHidden") || getd(win, "alpha") < 0.01) continue;
@@ -624,6 +690,15 @@ static void dump(void *ctx) {
 		int n = snprintf(t, sizeof t, "%s%d", wp++ ? "," : "", wpid);
 		put(t, n);
 	}
+	puts_("],\"hosted_scenes\":[");
+	for (int i = 0; i < g_nhosted; i++) {
+		char t[64];
+		int n = snprintf(t, sizeof t, "%s{\"pid\":%d,\"bundle\":", i ? "," : "", g_hosted[i].pid);
+		put(t, n);
+		putstr(g_hosted[i].bundle);
+		putf(",\"frame\":[%.1f,%.1f,%.1f,%.1f]}", g_hosted[i].frame.x, g_hosted[i].frame.y,
+			g_hosted[i].frame.w, g_hosted[i].frame.h);
+	}
 	puts_("]");
 	if (orient) {
 		puts_(",\"orientation\":");
@@ -631,7 +706,6 @@ static void dump(void *ctx) {
 	}
 	puts_("}\n");
 	char name[64];
-	bool sb = !strcmp(getprogname(), "SpringBoard");
 	if (sb) snprintf(name, sizeof name, "ax-springboard.json");
 	else snprintf(name, sizeof name, "ax-%d.json", getpid());
 	write_file(name, buf, len);
