@@ -25,6 +25,7 @@
 #include <unistd.h>
 #include <time.h>
 #include <dirent.h>
+#include <dlfcn.h>
 #include <errno.h>
 #include <sys/stat.h>
 
@@ -94,8 +95,7 @@ static const struct { unsigned long bit; const char *name; } kTraits[] = {
 
 static bool g_status_time_overridden;
 static int emitted;
-static void emit(id e) {
-	Rect f = frame_of(e);
+static void emit(id e, Rect f) {
 	if (f.w <= 0 || f.h <= 0) return;
 	const char *label = utf8(get(e, "accessibilityLabel")), *value = utf8(get(e, "accessibilityValue"));
 	const char *hint = utf8(get(e, "accessibilityHint")), *ident = utf8(get(e, "accessibilityIdentifier"));
@@ -126,6 +126,90 @@ static void emit(id e) {
 	putf("],\"frame\":[%.1f,%.1f,%.1f,%.1f]}", f.x, f.y, f.w, f.h);
 }
 
+// Per-window painter-order buffers: solid opaque UIViews painted in a later UIView.subviews sibling
+// occlude elements collected under earlier subviews siblings of the same UIView container (e.g.
+// full-screen in-VC search overlays or opaque sheets). Occlusion is scoped strictly to UIView.subviews
+// steps — never across accessibilityElements siblings, which follow VoiceOver reading order rather
+// than back-to-front painter order (for example a SwiftUI ZStack overlay button placed ahead of a
+// NavigationStack in _UIHostingView.accessibilityElements).
+#define MAX_ELEMS 2048
+#define MAX_OCCS  512
+typedef struct { id obj; Rect frame; bool has_zpos; bool occluded; } Elem;
+typedef struct { Rect frame; } Occluder;
+static Elem g_elems[MAX_ELEMS];
+static int g_nelems;
+static Occluder g_occs[MAX_OCCS];
+static int g_noccs;
+static double g_win_ox, g_win_oy;
+static bool g_prune_occluded;
+static bool g_no_occlusion;
+
+static double (*g_cg_color_get_alpha)(void *);
+static bool g_cg_checked;
+static double cg_color_alpha(void *cg) {
+	if (!cg) return 0.0;
+	if (!g_cg_checked) {
+		g_cg_color_get_alpha = (double (*)(void *))dlsym(RTLD_DEFAULT, "CGColorGetAlpha");
+		g_cg_checked = true;
+	}
+	return g_cg_color_get_alpha ? g_cg_color_get_alpha(cg) : 0.0;
+}
+
+static double view_bg_alpha(id v, id layer) {
+	if (layer && responds(layer, "backgroundColor")) {
+		void *cg = SEND(void *, layer, "backgroundColor")(layer, SEL_("backgroundColor"));
+		double a = cg_color_alpha(cg);
+		if (a > 0.0) return a;
+	}
+	id bg = get(v, "backgroundColor");
+	if (bg && responds(bg, "CGColor")) {
+		void *cg = SEND(void *, bg, "CGColor")(bg, SEL_("CGColor"));
+		return cg_color_alpha(cg);
+	}
+	return 0.0;
+}
+
+static Rect rect_intersect(Rect a, Rect b) {
+	double x1 = a.x > b.x ? a.x : b.x;
+	double y1 = a.y > b.y ? a.y : b.y;
+	double x2 = (a.x + a.w) < (b.x + b.w) ? (a.x + a.w) : (b.x + b.w);
+	double y2 = (a.y + a.h) < (b.y + b.h) ? (a.y + a.h) : (b.y + b.h);
+	if (x2 <= x1 || y2 <= y1) return (Rect){0};
+	return (Rect){x1, y1, x2 - x1, y2 - y1};
+}
+
+static Rect view_screen_rect(id v) {
+	Rect b = responds(v, "bounds") ? SEND(Rect, v, "bounds")(v, SEL_("bounds")) : (Rect){0};
+	if (b.w <= 0 || b.h <= 0) return (Rect){0};
+	if (responds(v, "convertRect:toView:")) {
+		Rect r = SEND(Rect, v, "convertRect:toView:", Rect, id)(v, SEL_("convertRect:toView:"), b, nil);
+		r.x += g_win_ox;
+		r.y += g_win_oy;
+		return r;
+	}
+	return frame_of(v);
+}
+
+static void mark_occluded(int e_start, int e_end, int o_start, int o_end, Rect wf) {
+	for (int e = e_start; e < e_end; e++) {
+		if (g_elems[e].occluded || g_elems[e].has_zpos) continue;
+		Rect vis = rect_intersect(g_elems[e].frame, wf);
+		double area = vis.w * vis.h;
+		if (area <= 0) continue;
+		double cx = vis.x + vis.w * 0.5;
+		double cy = vis.y + vis.h * 0.5;
+		for (int j = o_start; j < o_end; j++) {
+			Rect o = g_occs[j].frame;
+			if (cx < o.x || cx > o.x + o.w || cy < o.y || cy > o.y + o.h) continue;
+			Rect inter = rect_intersect(vis, o);
+			if (inter.w * inter.h >= area * 0.8) {
+				g_elems[e].occluded = true;
+				break;
+			}
+		}
+	}
+}
+
 // the web views on screen (their content is in WebContent's answer)
 static Rect g_webviews[16];
 static int g_webview_pids[16];
@@ -139,10 +223,17 @@ static double unix_ms(void) {
 	return t.tv_sec * 1e3 + t.tv_nsec / 1e6;
 }
 static void read_sent(const char *path) {
+	g_no_occlusion = false;
+	const char *env = getenv("AGENT_SIM_NO_OCCLUSION");
+	if (env && *env && strcmp(env, "0") != 0) g_no_occlusion = true;
 	FILE *f = fopen(path, "r");
 	if (!f) return;
-	double v = 0;
-	if (fscanf(f, "%lf", &v) == 1) g_sent = v;
+	char line[128] = {0};
+	if (fgets(line, sizeof line, f)) {
+		double v = 0;
+		if (sscanf(line, "%lf", &v) == 1) g_sent = v;
+		if (strstr(line, "no-occlusion")) g_no_occlusion = true;
+	}
 	fclose(f);
 }
 static double ms_now(void) {
@@ -151,11 +242,36 @@ static double ms_now(void) {
 	return t.tv_sec * 1e3 + t.tv_nsec / 1e6;
 }
 
-static void walk(id o, int depth) {
-	if (!o || depth > 60 || emitted > 2000) return;
+static void walk(id o, int depth, double eff_alpha, Rect clip, bool has_zpos, Rect wf) {
+	if (!o || depth > 60 || g_nelems >= MAX_ELEMS) return;
 	g_visits++;
 	if (getb(o, "accessibilityElementsHidden")) return;
-	if (kind(o, "UIView") && (getb(o, "isHidden") || getd(o, "alpha") < 0.01)) return;
+	double next_alpha = eff_alpha;
+	Rect next_clip = clip;
+	bool next_zpos = has_zpos;
+	if (kind(o, "UIView")) {
+		double a = getd(o, "alpha");
+		if (getb(o, "isHidden") || a < 0.01) return;
+		next_alpha *= a;
+		id layer = get(o, "layer");
+		double zp = layer ? getd(layer, "zPosition") : 0.0;
+		if (zp > 0.001 || zp < -0.001) next_zpos = true;
+		Rect vr = view_screen_rect(o);
+		if (g_prune_occluded && depth > 0 && !next_zpos && next_alpha >= 0.99 && vr.w >= 40.0 && vr.h >= 40.0
+		    && (!layer || !get(layer, "mask")) && view_bg_alpha(o, layer) >= 0.99) {
+			Rect painted = rect_intersect(vr, clip);
+			double cr = layer ? getd(layer, "cornerRadius") : 0.0;
+			if (cr > 0.0) {
+				if (painted.h > 2.0 * cr) { painted.y += cr; painted.h -= 2.0 * cr; }
+				else painted.h = 0.0;
+			}
+			if (painted.w >= 40.0 && painted.h >= 40.0 && g_noccs < MAX_OCCS) {
+				g_occs[g_noccs++] = (Occluder){ painted };
+			}
+		}
+		if (getb(o, "clipsToBounds") || (layer && getb(layer, "masksToBounds")))
+			next_clip = rect_intersect(next_clip, vr);
+	}
 	if (g_nwebviews < 16 && kind(o, "WKWebView")) {
 		Rect f = frame_of(o);
 		if (f.w > 0 && f.h > 0) {
@@ -164,23 +280,33 @@ static void walk(id o, int depth) {
 		}
 	}
 	if (getb(o, "isAccessibilityElement")) {
-		emit(o);
+		Rect f = frame_of(o);
+		if (f.w > 0 && f.h > 0)
+			g_elems[g_nelems++] = (Elem){ o, f, next_zpos, false };
 		return;
 	}
 	id kids = get(o, "accessibilityElements");
 	if (kids && count(kids)) {
-		for (unsigned long i = 0, n = count(kids); i < n; i++) walk(at(kids, i), depth + 1);
+		for (unsigned long i = 0, n = count(kids); i < n; i++)
+			walk(at(kids, i), depth + 1, next_alpha, next_clip, next_zpos, wf);
 		return;
 	}
 	long n = getl(o, "accessibilityElementCount");
 	if (n > 0 && n < 100000) {
 		for (long i = 0; i < n; i++)
-			walk(SEND(id, o, "accessibilityElementAtIndex:", long)(o, SEL_("accessibilityElementAtIndex:"), i), depth + 1);
+			walk(SEND(id, o, "accessibilityElementAtIndex:", long)(o, SEL_("accessibilityElementAtIndex:"), i),
+			     depth + 1, next_alpha, next_clip, next_zpos, wf);
 		return;
 	}
 	if (kind(o, "UIView")) {
 		id subs = get(o, "subviews");
-		for (unsigned long i = 0, m = count(subs); i < m; i++) walk(at(subs, i), depth + 1);
+		int sub_e0 = g_nelems;
+		for (unsigned long i = 0, m = count(subs); i < m; i++) {
+			int e_before = g_nelems, o_before = g_noccs;
+			walk(at(subs, i), depth + 1, next_alpha, next_clip, next_zpos, wf);
+			if (g_prune_occluded && g_noccs > o_before && e_before > sub_e0)
+				mark_occluded(sub_e0, e_before, o_before, g_noccs, wf);
+		}
 	}
 }
 
@@ -444,7 +570,11 @@ static void dump_web(void) {
 		if (known) continue;
 		cold = true;
 		emitted = 0;
-		walk(get(page, "accessibilityRootObjectWrapper"), 0);
+		g_nelems = 0;
+		g_noccs = 0;
+		g_prune_occluded = false;
+		Rect inf = (Rect){0, 0, 100000, 100000};
+		walk(get(page, "accessibilityRootObjectWrapper"), 0, 1.0, inf, false, inf);
 		for (int k = 0; k < MAXPAGES; k++)
 			if (!g_warm[k]) { g_warm[k] = page; break; }
 	}
@@ -469,7 +599,13 @@ static void dump_web_now(void *ctx) {
 		if (w++) puts_(",");
 		puts_("{\"class\":\"WebPage\",\"level\":0,\"elements\":[");
 		emitted = 0;
-		walk(root, 0);
+		g_nelems = 0;
+		g_noccs = 0;
+		g_prune_occluded = false;
+		Rect inf = (Rect){0, 0, 100000, 100000};
+		walk(root, 0, 1.0, inf, false, inf);
+		for (int e = 0; e < g_nelems; e++)
+			emit(g_elems[e].obj, g_elems[e].frame);
 		puts_("]}");
 	}
 	putf("],\"ms\":%.0f,\"visits\":%.0f,\"waited\":%.0f}\n", ms_now() - t0, g_visits, waited, 0);
@@ -590,6 +726,7 @@ static void dump(void *ctx) {
 	id wins = app_windows(app);
 	int w = 0;
 	const char *orient = NULL;
+	bool sb = !strcmp(getprogname(), "SpringBoard");
 	g_nwebviews = 0;
 	for (unsigned long i = 0, n = count(wins); i < n; i++) {
 		id win = at(wins, i);
@@ -601,7 +738,18 @@ static void dump(void *ctx) {
 		puts_("{\"class\":"); putstr(object_getClassName(win));
 		putf(",\"level\":%.0f,\"elements\":[", level, 0, 0, 0);
 		emitted = 0;
-		walk(win, 0);
+		g_nelems = 0;
+		g_noccs = 0;
+		g_prune_occluded = !sb && !g_no_occlusion;
+		Rect wf = frame_of(win);
+		if (wf.w <= 0 || wf.h <= 0) wf = (Rect){0, 0, 10000, 10000};
+		g_win_ox = wf.x;
+		g_win_oy = wf.y;
+		walk(win, 0, 1.0, wf, false, wf);
+		for (int e = 0; e < g_nelems; e++) {
+			if (g_elems[e].occluded) continue;
+			emit(g_elems[e].obj, g_elems[e].frame);
+		}
 		puts_("]}");
 	}
 	putf("],\"ms\":%.0f,\"visits\":%.0f,\"waited\":%.0f,\"webviews\":[", ms_now() - t0, g_visits, waited, 0);
@@ -631,7 +779,6 @@ static void dump(void *ctx) {
 	}
 	puts_("}\n");
 	char name[64];
-	bool sb = !strcmp(getprogname(), "SpringBoard");
 	if (sb) snprintf(name, sizeof name, "ax-springboard.json");
 	else snprintf(name, sizeof name, "ax-%d.json", getpid());
 	write_file(name, buf, len);
@@ -660,7 +807,6 @@ static void start(void) {
 // the main dispatch queue), so there a thread looks for a request file (req-<pid>) every 150 ms, puts the work on
 // the main run loop itself and wakes it.
 #include <pthread.h>
-#include <dlfcn.h>
 static void *watch_requests(void *arg) {
 	char path[1200];
 	snprintf(path, sizeof path, "%s/req-%d", dir, getpid());

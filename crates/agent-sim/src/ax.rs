@@ -155,11 +155,26 @@ fn sent_stamp() -> String {
     format!("{:.0}", t.as_secs_f64() * 1e3)
 }
 
+fn req_payload(stamp: &str, no_occlusion: bool) -> String {
+    if no_occlusion {
+        format!("{stamp} no-occlusion")
+    } else {
+        stamp.to_string()
+    }
+}
+
+fn env_no_occlusion() -> bool {
+    std::env::var("AGENT_SIM_NO_OCCLUSION")
+        .map(|v| !v.is_empty() && v != "0")
+        .unwrap_or(false)
+}
+
 fn dump(
     dir: &Path,
     (linux_pid, inner): (u32, u32),
     name: &str,
     timeout: Duration,
+    no_occlusion: bool,
 ) -> Result<RawDump> {
     let file = dir.join(name);
     let _ = std::fs::remove_file(&file);
@@ -168,7 +183,10 @@ fn dump(
         .and_then(|n| n.strip_suffix(".json"))
     {
         if p.parse::<u32>().is_ok() {
-            let _ = std::fs::write(dir.join(format!("req-{p}")), sent_stamp());
+            let _ = std::fs::write(
+                dir.join(format!("req-{p}")),
+                req_payload(&sent_stamp(), no_occlusion),
+            );
         }
     }
     phone::ask_hook(dir, linux_pid, inner)?;
@@ -352,6 +370,11 @@ fn resolve_orientation(
 }
 
 pub fn snapshot(dev: &Device) -> Result<Snapshot> {
+    snapshot_with_options(dev, env_no_occlusion())
+}
+
+pub fn snapshot_with_options(dev: &Device, no_occlusion: bool) -> Result<Snapshot> {
+    let no_occlusion = no_occlusion || env_no_occlusion();
     let dir = phone::data_dir(dev).join("tmp/agent-sim");
     std::fs::create_dir_all(&dir)?;
     let sb = phone::process_ids(dev, |_, exe| exe == "SpringBoard")?;
@@ -359,18 +382,24 @@ pub fn snapshot(dev: &Device) -> Result<Snapshot> {
         return Err(phone::not_running(dev));
     };
     let _ = std::fs::remove_file(dir.join("front.json"));
-    let springboard =
-        dump(&dir, sb, "ax-springboard.json", Duration::from_secs(5)).map_err(|e| {
-            // its hook is loaded (it answered before) but it is silent: the phone is hung, not missing a hook
-            if dir.join(format!("hooked-{}", sb.1)).exists() {
-                anyhow::anyhow!(
-                    "SpringBoard does not answer: the phone is hung (or still busy); {}",
-                    phone::HUNG_FIX
-                )
-            } else {
-                e
-            }
-        })?;
+    let springboard = dump(
+        &dir,
+        sb,
+        "ax-springboard.json",
+        Duration::from_secs(5),
+        no_occlusion,
+    )
+    .map_err(|e| {
+        // its hook is loaded (it answered before) but it is silent: the phone is hung, not missing a hook
+        if dir.join(format!("hooked-{}", sb.1)).exists() {
+            anyhow::anyhow!(
+                "SpringBoard does not answer: the phone is hung (or still busy); {}",
+                phone::HUNG_FIX
+            )
+        } else {
+            e
+        }
+    })?;
     wait_for(&dir.join("front.json"), Duration::from_secs(2))?;
     let front: Front = serde_json::from_str(&std::fs::read_to_string(dir.join("front.json"))?)?;
     let mut app_not_answering = false;
@@ -391,6 +420,7 @@ pub fn snapshot(dev: &Device) -> Result<Snapshot> {
                 (linux, p),
                 &format!("ax-{p}.json"),
                 Duration::from_secs(3),
+                no_occlusion,
             ) {
                 Ok(d) => Some(d),
                 Err(_) => {
@@ -417,6 +447,7 @@ pub fn snapshot(dev: &Device) -> Result<Snapshot> {
                             (linux, p),
                             &format!("ax-{p}.json"),
                             Duration::from_secs(3),
+                            no_occlusion,
                         ) {
                             Ok(d) => Some(d),
                             Err(_) => {
@@ -893,6 +924,15 @@ mod tests {
         assert_eq!(
             resolve_orientation(None, "landscapeLeft", scr, &[("Safari", &landscape_win)]),
             "landscapeLeft"
+        );
+    }
+
+    #[test]
+    fn req_payload_encodes_no_occlusion_flag() {
+        assert_eq!(req_payload("1700000000000", false), "1700000000000");
+        assert_eq!(
+            req_payload("1700000000000", true),
+            "1700000000000 no-occlusion"
         );
     }
 }

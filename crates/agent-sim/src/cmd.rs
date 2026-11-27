@@ -201,8 +201,8 @@ pub fn screenshot(dev: &Device, out: Option<PathBuf>) -> Result<String> {
     Ok(out.display().to_string())
 }
 
-pub fn snapshot(dev: &Device, json: bool) -> Result<String> {
-    let s = ax::snapshot(dev)?;
+pub fn snapshot(dev: &Device, json: bool, no_occlusion: bool) -> Result<String> {
+    let s = ax::snapshot_with_options(dev, no_occlusion)?;
     Ok(if json {
         serde_json::to_string_pretty(&s)?
     } else {
