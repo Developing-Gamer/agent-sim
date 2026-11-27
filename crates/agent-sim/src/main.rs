@@ -1,6 +1,7 @@
 mod ax;
 mod cmd;
 mod device;
+mod doctor;
 mod encode_bench;
 mod files;
 mod input;
@@ -51,6 +52,9 @@ enum Command {
         #[arg(value_parser = ["full", "reduced"])]
         mode: String,
     },
+    /// Check what a phone needs on this machine (systemd, namespaces, Vulkan, the runtime, the hooks, the phone) and
+    /// say what is missing. Exits 1 when something blocks.
+    Doctor,
     /// Boot the phone and wait for its home screen.
     Up,
     /// Shut the phone down.
@@ -326,6 +330,14 @@ fn main() -> Result<()> {
                 env.push(("MODEL", m.as_str()));
             }
             phone::script("setup-vm.sh", &[], &env)
+        }
+        Command::Doctor => {
+            let checks = doctor::run(&name);
+            println!("{}", doctor::format(&checks));
+            if checks.iter().any(|c| c.level == doctor::Level::Fail) {
+                std::process::exit(1);
+            }
+            Ok(())
         }
         Command::Effects { mode } => say(cmd::effects(&name, &mode)),
         Command::Pool { args } => {

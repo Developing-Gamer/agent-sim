@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- `agent-sim doctor` checks what a phone needs on this machine (Linux x86-64, memory, user namespaces, the systemd
+  user session, curl, tar, python3, ffmpeg, a Vulkan driver, x86Sim, the hooks, the iOS runtime, the phone and whether
+  SpringBoard answers) and says what is missing, so a failed setup can be reported with something to go on.
 - Sign in with Apple reaches Apple's own sheet (or its "Sign in to your Apple Account" alert on a phone without one)
   instead of failing at once with ASAuthorizationError 1000: the `apps` service set starts Apple's account daemon,
   akd, which only runs when asked for.
