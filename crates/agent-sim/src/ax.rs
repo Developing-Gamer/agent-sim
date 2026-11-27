@@ -28,6 +28,10 @@ pub struct Element {
     pub states: Vec<String>,
     /// x, y, width, height in screen points
     pub frame: [f64; 4],
+    /// UIAccessibility activation point in screen points when distinct from frame center
+    /// (for example SwiftUI full-row Toggle / ColorPicker / Picker controls).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation_point: Option<[f64; 2]>,
     /// the process the element belongs to (the app's executable, or SpringBoard)
     pub owner: String,
 }
@@ -38,6 +42,31 @@ impl Element {
             self.frame[0] + self.frame[2] / 2.0,
             self.frame[1] + self.frame[3] / 2.0,
         )
+    }
+
+    /// Screen-point coordinate to tap for this element: prefers `activation_point` when present
+    /// and inside `frame` (so SwiftUI / UIKit trailing switches, color wells and menu buttons are
+    /// tapped directly), falling back to the geometric center of `frame`.
+    pub fn tap_point(&self) -> (f64, f64) {
+        if let Some([x, y]) = valid_activation_point(self.activation_point, self.frame) {
+            return (x, y);
+        }
+        self.center()
+    }
+}
+
+fn valid_activation_point(ap: Option<[f64; 2]>, frame: [f64; 4]) -> Option<[f64; 2]> {
+    let [x, y] = ap?;
+    if x.is_finite()
+        && y.is_finite()
+        && x >= frame[0]
+        && x <= frame[0] + frame[2]
+        && y >= frame[1]
+        && y <= frame[1] + frame[3]
+    {
+        Some([x, y])
+    } else {
+        None
     }
 }
 
@@ -94,6 +123,8 @@ struct RawElement {
     id: Option<String>,
     traits: Vec<String>,
     frame: [f64; 4],
+    #[serde(default)]
+    activation_point: Option<[f64; 2]>,
 }
 #[derive(Deserialize)]
 struct Front {
@@ -516,6 +547,7 @@ pub fn snapshot(dev: &Device) -> Result<Snapshot> {
                 id: e.id.clone().filter(|s| !s.is_empty()),
                 states,
                 frame: e.frame,
+                activation_point: valid_activation_point(e.activation_point, e.frame),
                 owner: owner.to_string(),
             });
         }
@@ -595,7 +627,7 @@ pub fn format(s: &Snapshot) -> String {
     };
     let mut out = format!("{header}\n");
     for e in &s.elements {
-        let (x, y) = e.center();
+        let (x, y) = e.tap_point();
         out.push_str(&format!("@{} {}", e.reference, e.role));
         if let Some(l) = &e.label {
             out.push_str(&format!(" {}", quote(l)));
@@ -688,6 +720,7 @@ mod tests {
             id: None,
             states: vec![],
             frame: [0.0; 4],
+            activation_point: None,
             owner: "x".into(),
         };
         let s = Snapshot {
@@ -728,6 +761,7 @@ mod tests {
                 id: None,
                 states: vec![],
                 frame: [0.0; 4],
+                activation_point: None,
                 owner: "x".into(),
             }],
         };
@@ -842,6 +876,7 @@ mod tests {
                     id: None,
                     traits: vec!["button".into()],
                     frame: [150.0, 250.0, 100.0, 44.0],
+                    activation_point: None,
                 },
                 RawElement {
                     label: Some("Bottom".into()),
@@ -850,6 +885,7 @@ mod tests {
                     id: None,
                     traits: vec!["button".into()],
                     frame: [150.0, 600.0, 100.0, 44.0],
+                    activation_point: None,
                 },
             ],
         };
@@ -863,6 +899,7 @@ mod tests {
                 id: None,
                 traits: vec!["button".into()],
                 frame: [760.0, 10.0, 40.0, 44.0],
+                activation_point: None,
             }],
         };
         // Explicit interface orientation from hook wins over physical device orientation
@@ -894,5 +931,59 @@ mod tests {
             resolve_orientation(None, "landscapeLeft", scr, &[("Safari", &landscape_win)]),
             "landscapeLeft"
         );
+    }
+
+    #[test]
+    fn tap_point_prefers_in_frame_activation_point() {
+        let mut toggle = Element {
+            reference: "e1".into(),
+            role: "button".into(),
+            label: Some("Enable Glass".into()),
+            value: Some("1".into()),
+            hint: None,
+            id: None,
+            states: vec![],
+            frame: [16.0, 208.0, 370.0, 52.0],
+            activation_point: Some([336.0, 234.0]),
+            owner: "App".into(),
+        };
+        // Full-row center is (201, 234), while activation_point targets the trailing UISwitch
+        assert_eq!(toggle.center(), (201.0, 234.0));
+        assert_eq!(toggle.tap_point(), (336.0, 234.0));
+
+        // Format displays tap_point coordinates
+        let snap = Snapshot {
+            app: Some("com.example.app".into()),
+            locked: false,
+            notification_center: false,
+            modal: None,
+            modal_not_answering: false,
+            app_not_answering: false,
+            orientation: None,
+            elements: vec![toggle.clone()],
+        };
+        assert!(format(&snap).contains("@e1 button \"Enable Glass\" value=\"1\" (336,234)"));
+
+        // Out-of-frame or non-finite activation_point falls back to center
+        toggle.activation_point = Some([0.0, 0.0]);
+        assert_eq!(toggle.tap_point(), (201.0, 234.0));
+        toggle.activation_point = Some([f64::NAN, 234.0]);
+        assert_eq!(toggle.tap_point(), (201.0, 234.0));
+        toggle.activation_point = None;
+        assert_eq!(toggle.tap_point(), (201.0, 234.0));
+    }
+
+    #[test]
+    fn raw_element_deserializes_optional_activation_point() {
+        let legacy: RawElement = serde_json::from_str(
+            r#"{"label":"Toggle","traits":["button"],"frame":[16,208,370,52]}"#,
+        )
+        .unwrap();
+        assert_eq!(legacy.activation_point, None);
+        let with_ap: RawElement = serde_json::from_str(
+            r#"{"label":"Toggle","traits":["button"],"frame":[16,208,370,52],"activation_point":[336.0,234.0]}"#,
+        )
+        .unwrap();
+        assert_eq!(with_ap.activation_point, Some([336.0, 234.0]));
     }
 }
