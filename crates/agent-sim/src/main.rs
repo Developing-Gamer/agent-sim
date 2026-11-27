@@ -2,6 +2,7 @@ mod ax;
 mod cmd;
 mod device;
 mod encode_bench;
+mod files;
 mod input;
 mod ipa;
 mod mcp;
@@ -186,6 +187,11 @@ enum Command {
         #[arg(required = true)]
         paths: Vec<PathBuf>,
     },
+    /// Put files in the Files app's On My iPhone, list them and remove them.
+    Files {
+        #[command(subcommand)]
+        action: FilesAction,
+    },
     /// Grant, revoke or reset app permissions without a prompt (as `simctl privacy`).
     Privacy {
         #[arg(value_parser = ["grant", "revoke", "reset"])]
@@ -274,6 +280,22 @@ enum LocationAction {
     Clear,
 }
 
+#[derive(Subcommand)]
+enum FilesAction {
+    /// Copy files or folders into On My iPhone (`files push book.pdf Scores/ --to Library`).
+    Push {
+        #[arg(required = true)]
+        paths: Vec<PathBuf>,
+        /// Folder inside On My iPhone to copy into, created if missing.
+        #[arg(long)]
+        to: Option<String>,
+    },
+    /// List a folder of On My iPhone (its top when none is given).
+    Ls { dir: Option<String> },
+    /// Remove a file or folder from On My iPhone.
+    Rm { path: String },
+}
+
 fn random_token() -> Result<String> {
     let mut b = [0u8; 16];
     std::fs::File::open("/dev/urandom")
@@ -334,6 +356,11 @@ fn main() -> Result<()> {
             LocationAction::Clear => say(cmd::location_clear(&dev()?)),
         },
         Command::Addmedia { paths } => say(cmd::addmedia(&dev()?, &paths)),
+        Command::Files { action } => match action {
+            FilesAction::Push { paths, to } => say(files::push(&dev()?, &paths, to.as_deref())),
+            FilesAction::Ls { dir } => say(files::ls(&dev()?, dir.as_deref())),
+            FilesAction::Rm { path } => say(files::rm(&dev()?, &path)),
+        },
         Command::Privacy {
             action,
             service,

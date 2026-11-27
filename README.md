@@ -92,6 +92,8 @@ lists them all.
 
 The simulator controls Apple's `simctl` has are here too: `appearance dark`, `status-bar --time 9:41`, `clipboard TEXT`,
 `rotate right`, `orientation landscapeLeft`, `pinch`, `record -o video.mp4`, `erase`, `logs`, plus x86Sim's `location`, `push`, `privacy` and `addmedia`.
+`files push Scores/ --to Library`, `files ls` and `files rm` put documents in the Files app's On My iPhone for apps
+to open.
 [docs/PARITY.md](docs/PARITY.md) compares every feature with Apple's Simulator on a Mac.
 
 Device builds run when they are not encrypted. App Store downloads are (FairPlay), so use an Ad Hoc, Development or
