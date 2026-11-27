@@ -147,7 +147,7 @@ fn tools() -> Value {
         ),
         tool(
             "install",
-            "Install an app from a path on this machine: an .ipa (device builds are converted for the simulator; App Store downloads are encrypted and refused) or a simulator .app.",
+            "Install an app from a path on this machine or an http(s) URL: an .ipa (device builds are converted for the simulator; App Store downloads are encrypted and refused), a simulator .app, or an archive holding one (.tar.gz, .zip, as EAS Build and CI artifacts come).",
             json!({"path": {"type": "string"}}),
             &["path"]
         ),

@@ -8,6 +8,8 @@
 - `tap "TEXT"`, `wait` and the MCP tools that find elements by text match accented and non-Latin text whatever its
   Unicode normalization: the Files app and other Foundation-backed labels come decomposed (NFD), so a typed (NFC)
   `tap "Απολυτίκιο"` found nothing.
+- `install` takes an archive holding an .app (.tar.gz, .tgz, .tar, .zip), as EAS Build and CI artifacts come, and an
+  http(s) URL of any file it takes, so an EAS simulator build installs with `agent-sim install <artifact URL>`.
 - `snapshot`, `tap`, `swipe`, `scroll` and `record` work in landscape: elements right of the portrait width are no
   longer dropped, taps land where they are aimed, and recordings come out upright. Portrait-locked apps stay portrait.
 - `tap "Settings" --hold-ms 900` no longer reads the flag as part of the target; `type --keys` no longer leaves Shift

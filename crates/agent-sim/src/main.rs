@@ -122,7 +122,8 @@ enum Command {
     },
     /// Press a button: home, lock, volup, voldown, siri, action...
     Press { button: String },
-    /// Install an app: an .ipa (device builds are converted for the simulator) or a simulator .app.
+    /// Install an app: an .ipa (device builds are converted for the simulator), a simulator .app, an archive holding
+    /// one (.tar.gz, .zip, as EAS Build and CI artifacts come), or an http(s) URL of any of these.
     Install { path: PathBuf },
     /// Remove an installed app.
     Uninstall { bundle_id: String },
