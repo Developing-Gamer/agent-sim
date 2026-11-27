@@ -11,9 +11,9 @@ own translator is used. A newer x86Sim release therefore never breaks setup.
 
 | Patch | Upstream |
 |---|---|
-| `0001-guest-stacks-of-new-threads.patch` | not yet sent |
-| `0002-keep-the-fault-handler-after-guest-sigaction.patch` | fixed in x86Sim's main branch by [6433b48](https://github.com/x86sim/x86sim/commit/6433b48) (after v0.5.3); skipped automatically from the release that includes it |
-| `0003-release-unused-reservation-tails.patch` | [x86sim/x86sim#24](https://github.com/x86sim/x86sim/pull/24), open |
+| `0001-guest-stacks-of-new-threads.patch` | not yet sent; does not apply to v0.7.3 (the code changed), so whether v0.7.3 still crashes on web workers is untested |
+| `0002-keep-the-fault-handler-after-guest-sigaction.patch` | fixed upstream by [6433b48](https://github.com/x86sim/x86sim/commit/6433b48); no longer applies to v0.7.3 |
+| `0003-release-unused-reservation-tails.patch` | merged as [x86sim/x86sim#24](https://github.com/x86sim/x86sim/pull/24) (in v0.7.0); no longer applies to v0.7.3 |
 
 | Patch | What it fixes |
 |---|---|

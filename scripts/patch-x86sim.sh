@@ -64,10 +64,6 @@ if ! have_build_packages; then
 fi
 if [ ! -d "$SRC/.git" ]; then
 	git clone -q --depth 1 --branch "v$X86SIM_VERSION" https://github.com/x86sim/x86sim.git "$SRC"
-	# the submodule URLs are SSH; the same repositories over HTTPS need no GitHub key
-	git -C "$SRC" config submodule.external/dynarmic.url https://github.com/x86sim/dynarmic.git
-	git -C "$SRC" submodule -q update --init --depth 1 external/dynarmic
-	git -C "$SRC/external/dynarmic" submodule -q update --init --recursive --depth 1
 fi
 git -C "$SRC" checkout -q -- .
 # Each patch is meant to land upstream. One that x86Sim's source already contains, or no longer matches because
@@ -90,6 +86,13 @@ if [ "$applied" = 0 ]; then
 	"$0" restore
 	mkdir -p "$BUILD" && cat "$PATCHES"/*.patch | sha256sum >"$BUILD/patches.sha"
 	exit 0
+fi
+# the translator builds against dynarmic; its submodule URLs are SSH, and the same repositories over HTTPS need no
+# GitHub key
+if [ ! -f "$SRC/external/dynarmic/CMakeLists.txt" ]; then
+	git -C "$SRC" config submodule.external/dynarmic.url https://github.com/x86sim/dynarmic.git
+	git -C "$SRC" submodule -q update --init --depth 1 external/dynarmic
+	git -C "$SRC/external/dynarmic" submodule -q update --init --recursive --depth 1
 fi
 [ -f "$BUILD/build.ninja" ] || cmake -S "$SRC/linux/arm64jit" -B "$BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Release \
 	-DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ >/dev/null

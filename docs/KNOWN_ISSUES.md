@@ -29,6 +29,16 @@ x86Sim are reported there with the evidence below.
 
 ## Open
 
+### x86Sim 0.7.x does not boot a phone on the test VM yet
+
+New setups still install x86Sim 0.5.3. x86Sim 0.7.3 (0.6.0 and 0.7.0 to 0.7.2 not tried) installs and creates a phone on
+the 8 vCPU, Ubuntu 24.04 (kernel 6.8) cloud VM agent-sim is tested on, but the phone never draws a frame: its container's
+launchd starts and stays idle in `launchctl bootstrap -S System`, and `darling shell` into the container finds no
+`shellspawn.sock`. It is the same in system and user-namespace Darling mode and with x86Sim's own boot script and no
+agent-sim settings; Darling itself starts a fresh prefix and runs a command in 2 s, and 0.5.3 boots on the same VM. The
+cause is not known. 0.7.x also moves the shared symlinks in x86Sim's data directory (`cli`, `host`, `darling-prefix`...) to
+the version that ran last, so two versions should not run phones at the same time.
+
 ### Lost dead-name notifications (root cause, in Darling)
 
 When a process dies, Darling turns the send rights other processes hold to its ports into dead names, but the
