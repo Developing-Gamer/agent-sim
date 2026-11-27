@@ -9,6 +9,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::{Duration, Instant};
+use unicode_normalization::UnicodeNormalization;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Element {
@@ -629,12 +630,14 @@ pub fn resolve_with_orientation(dev: &Device, r: &str) -> Result<(Element, Optio
 /// The element `text` names: one whose label, value or id equals it (ignoring case), else one that contains it.
 /// Among equally good matches, something to act on (a button, link or field) wins over text and headings.
 pub fn find<'a>(s: &'a Snapshot, text: &str) -> Option<&'a Element> {
-    let t = text.to_lowercase();
+    // Files and other Foundation-backed labels come decomposed (NFD); text typed on Linux is composed (NFC).
+    let fold = |v: &str| v.nfc().collect::<String>().to_lowercase();
+    let t = fold(text);
     let fields = |e: &'a Element| {
         [&e.label, &e.value, &e.id]
             .into_iter()
             .flatten()
-            .map(|v| v.to_lowercase())
+            .map(|v| fold(v))
     };
     let actionable = |e: &&&'a Element| {
         matches!(
@@ -703,6 +706,35 @@ mod tests {
         };
         assert_eq!(find(&s, "sign in").unwrap().reference, "e2");
         assert_eq!(find(&s, "continue").unwrap().reference, "e3");
+    }
+
+    #[test]
+    fn text_matches_whatever_the_unicode_normalization() {
+        let decomposed: String = "Απολυτίκιο Αγίου Γεωργίου, PDF document".nfd().collect();
+        let s = Snapshot {
+            app: None,
+            locked: false,
+            notification_center: false,
+            modal: None,
+            modal_not_answering: false,
+            app_not_answering: false,
+            orientation: None,
+            elements: vec![Element {
+                reference: "e1".into(),
+                role: "element".into(),
+                label: Some(decomposed.clone()),
+                value: None,
+                hint: None,
+                id: None,
+                states: vec![],
+                frame: [0.0; 4],
+                owner: "x".into(),
+            }],
+        };
+        let composed: String = "απολυτίκιο".nfc().collect();
+        assert!(!decomposed.to_lowercase().contains(&composed));
+        assert_eq!(find(&s, &composed).unwrap().reference, "e1");
+        assert_eq!(find(&s, &decomposed).unwrap().reference, "e1");
     }
 
     #[test]
