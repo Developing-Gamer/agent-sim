@@ -26,8 +26,10 @@
 #include <time.h>
 #include <dirent.h>
 #include <errno.h>
+#include <math.h>
 #include <sys/stat.h>
 
+typedef struct { double x, y; } Point;
 typedef struct { double x, y, w, h; } Rect;
 #define SEL_(s) sel_registerName(s)
 #define SEND(r, o, s, ...) ((r (*)(id, SEL, ##__VA_ARGS__))objc_msgSend)
@@ -51,6 +53,13 @@ static id at(id a, unsigned long i) { return SEND(id, a, "objectAtIndex:", unsig
 static Rect frame_of(id o) {
 	if (!responds(o, "accessibilityFrame")) return (Rect){0};
 	return SEND(Rect, o, "accessibilityFrame")(o, SEL_("accessibilityFrame"));
+}
+static bool activation_point_of(id o, Point *out) {
+	if (!responds(o, "accessibilityActivationPoint")) return false;
+	Point p = SEND(Point, o, "accessibilityActivationPoint")(o, SEL_("accessibilityActivationPoint"));
+	if (!isfinite(p.x) || !isfinite(p.y)) return false;
+	*out = p;
+	return true;
 }
 
 // a growing JSON buffer
@@ -123,7 +132,15 @@ static void emit(id e) {
 	for (size_t i = 0; i < sizeof kTraits / sizeof *kTraits; i++)
 		if (traits & kTraits[i].bit) { if (k++) puts_(","); putstr(kTraits[i].name); }
 	if (kind(e, "UITextField") || kind(e, "UITextView")) { if (k++) puts_(","); putstr("text-field"); }
-	putf("],\"frame\":[%.1f,%.1f,%.1f,%.1f]}", f.x, f.y, f.w, f.h);
+	putf("],\"frame\":[%.1f,%.1f,%.1f,%.1f]", f.x, f.y, f.w, f.h);
+	Point ap;
+	double cx = f.x + f.w * 0.5, cy = f.y + f.h * 0.5;
+	if (activation_point_of(e, &ap)
+	    && ap.x >= f.x && ap.x <= f.x + f.w && ap.y >= f.y && ap.y <= f.y + f.h
+	    && (fabs(ap.x - cx) >= 1.0 || fabs(ap.y - cy) >= 1.0)) {
+		putf(",\"activation_point\":[%.1f,%.1f]", ap.x, ap.y, 0, 0);
+	}
+	puts_("}");
 }
 
 // the web views on screen (their content is in WebContent's answer)

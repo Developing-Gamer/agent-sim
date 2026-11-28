@@ -240,7 +240,7 @@ fn point_role(
         )),
         [r] if r.starts_with('@') => {
             let (e, orient) = ax::resolve_with_orientation(dev, r)?;
-            let (x, y) = e.center();
+            let (x, y) = e.tap_point();
             Ok((x, y, describe(&e), e.role.clone(), orient))
         }
         [] => bail!("tap what? an element (@e3), a point (x y) or text"),
@@ -251,7 +251,7 @@ fn point_role(
             loop {
                 let s = ax::snapshot(dev)?;
                 if let Some(e) = ax::find(&s, &text) {
-                    let (x, y) = e.center();
+                    let (x, y) = e.tap_point();
                     return Ok((x, y, describe(e), e.role.clone(), s.orientation));
                 }
                 if start.elapsed() > Duration::from_secs(3) {
