@@ -90,7 +90,7 @@ alerts, the home screen and the status bar are in it too. Out-of-process pickers
 `app <bundle> (modal PhotosPicker)`, and a locked phone reads `lock screen`. Every command takes `--device NAME`; `agent-sim --help`
 lists them all; `agent-sim doctor` says what is missing when a setup or a boot fails.
 
-The simulator controls Apple's `simctl` has are here too: `appearance dark`, `status-bar --time 9:41`, `clipboard TEXT`,
+The simulator controls Apple's `simctl` has are here too: `appearance dark`, `status-bar --time 9:41`, `clipboard [TEXT]`,
 `rotate right`, `orientation landscapeLeft`, `pinch`, `record -o video.mp4`, `erase`, `logs`, plus x86Sim's `location`, `push`, `privacy` and `addmedia`.
 `files push Scores/ --to Library`, `files ls` and `files rm` put documents in the Files app's On My iPhone for apps
 to open.

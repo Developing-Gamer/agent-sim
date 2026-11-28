@@ -5,25 +5,27 @@
 #   scripts/setup-vm.sh
 #
 # Environment:
-#   X86SIM_VERSION   x86Sim release (default 0.5.3)
+#   X86SIM_VERSION   x86Sim release (default 0.7.1)
 #   RUNTIME_BUILD    iOS runtime build from Apple's catalogue (default 24B8117, iOS 27.2); the phone is created on
 #                    it, and a phone already made on another runtime needs another DEVICE
-#   DEVICE, MODEL    the phone to create (default p, "iPhone 17 Pro (at 2x)")
+#   DEVICE, MODEL    the phone to create (default p, "iPhone 17 Pro")
 #   FIDELITY=high    a phone that looks exactly like Apple's simulator: the model's own pixel density ("iPhone 17 Pro",
 #                    3x) and every visual effect (blur, transparency, motion). The default, fast, draws at 2x with
 #                    Reduce Transparency and Reduce Motion on: it scrolls faster (docs/BENCHMARKS.md).
+#   AGENT_SIM_AOT=1  also pre-translate the runtime's code (x86Sim's `aot update`) on x86Sim 0.6 and later, where it is
+#                    off by default: on the cloud VM agent-sim is tested on, a phone with that image never reached its
+#                    home screen (docs/KNOWN_ISSUES.md). Older releases always pre-translate.
 #   AGENT_SIM_PATCH_X86SIM=0   keep x86Sim's own translator (skips the fixes in patches/x86sim)
 #
 # Apple's iOS runtime is downloaded from Apple onto this machine (about 8 GB) and never leaves it.
 set -Eeuo pipefail
 
-X86SIM_VERSION=${X86SIM_VERSION:-0.5.3}
+X86SIM_VERSION=${X86SIM_VERSION:-0.7.1}
 RUNTIME_BUILD=${RUNTIME_BUILD:-24B8117}
 DEVICE=${DEVICE:-p}
 FIDELITY=${FIDELITY:-fast}
 case $FIDELITY in
-high) MODEL=${MODEL:-"iPhone 17 Pro"} ;;
-fast) MODEL=${MODEL:-"iPhone 17 Pro (at 2x)"} ;;
+high | fast) ;;
 *) echo "setup-vm.sh: FIDELITY is fast or high" >&2; exit 2 ;;
 esac
 ROOT=${AGENT_SIM_HOME:-$HOME/.local/share/agent-sim}
@@ -163,6 +165,16 @@ if ! RUNTIME_DIR=$(runtime_dir); then
 fi
 RUNTIME_ROOT=$RUNTIME_DIR/RuntimeRoot
 
+# x86Sim 0.6 and later keep "fast" and "high" as a setting of the phone (x86sim fidelity); older releases need a
+# device type that is the iPhone 17 Pro at 2x, which is added to their list.
+NATIVE_FIDELITY=0
+if "$X" x86sim --help 2>&1 | grep -q '^  fidelity'; then NATIVE_FIDELITY=1; fi
+if [ "$NATIVE_FIDELITY" = 1 ]; then
+	MODEL=${MODEL:-"iPhone 17 Pro"}
+else
+	case $FIDELITY in high) MODEL=${MODEL:-"iPhone 17 Pro"} ;; *) MODEL=${MODEL:-"iPhone 17 Pro (at 2x)"} ;; esac
+fi
+if [ "$NATIVE_FIDELITY" != 1 ]; then
 log "Adding iPhone 17 Pro (at 2x): the iPhone 17 Pro's layout at 44% of the pixels"
 types=$(ls "$DATA"/app/"$X86SIM_VERSION"*/cli/lib/devicetypes-a64.json | head -1)
 python3 - "$types" <<'PY'
@@ -176,14 +188,26 @@ if "iPhone 17 Pro (at 2x)" not in types:
     types["iPhone 17 Pro (at 2x)"] = t
     json.dump(types, open(path, "w"), indent=1)
 PY
+fi
 
 DIR=$DATA/var/device-a64-$DEVICE
 if [ ! -d "$DIR" ]; then
 	log "Creating the phone $DEVICE ($MODEL)"
 	# on RUNTIME_BUILD: without --ios, x86Sim takes its default runtime whatever RUNTIME_BUILD says
 	"$X" x86sim device create --model "$MODEL" --ios "$RUNTIME_BUILD" "$DEVICE"
+	if [ "$NATIVE_FIDELITY" = 1 ]; then
+		(cd "$DATA" && X86SIM_DEVICE=$DIR "$X" x86sim fidelity "$FIDELITY" >/dev/null)
+	fi
 elif [ -s "$DIR/runtime" ] && [[ $(<"$DIR/runtime") != *-"$RUNTIME_BUILD"-arm64 ]]; then
 	die "$DEVICE runs $(<"$DIR/runtime"), not $RUNTIME_BUILD: pick another DEVICE for this runtime"
+fi
+# a phone made for an older release has the "(at 2x)" device type, which newer releases do not list: it becomes the
+# plain model with x86Sim's own fast setting, which draws the same 402x874 points at 2x
+if [ "$NATIVE_FIDELITY" = 1 ] && [ -f "$DIR/model" ] && [[ $(<"$DIR/model") == *" (at 2x)" ]]; then
+	log "Moving $DEVICE to x86Sim's own fast setting (it used the iPhone 17 Pro at 2x device type of older releases)"
+	model=$(<"$DIR/model")
+	printf '%s\n' "${model% (at 2x)}" >"$DIR/model"
+	(cd "$DATA" && X86SIM_DEVICE=$DIR "$X" x86sim fidelity fast >/dev/null)
 fi
 
 aot_status() {
@@ -234,7 +258,9 @@ PY
 	done
 	touch "$granted"
 }
-if [[ $(aot_status) != *"(current)"* ]] || [ ! -e "$calm" ] || [ ! -e "$granted" ]; then
+want_aot=1
+if [ "$NATIVE_FIDELITY" = 1 ] && [ "${AGENT_SIM_AOT:-0}" != 1 ]; then want_aot=0; fi
+if { [ "$want_aot" = 1 ] && [[ $(aot_status) != *"(current)"* ]]; } || [ ! -e "$calm" ] || [ ! -e "$granted" ]; then
 	if [ ! -e "$trained" ] || [ ! -e "$calm" ] || [ ! -e "$granted" ]; then
 		log "Booting the phone once: it learns what runs, gets Reduce Transparency and Motion, and its apps' permissions"
 		"$HERE/phone.sh" start "$DEVICE"
@@ -242,19 +268,21 @@ if [[ $(aot_status) != *"(current)"* ]] || [ ! -e "$calm" ] || [ ! -e "$granted"
 		reduce_effects
 		grant_builtin
 		# a first phone runs a while so the pre-translation learns what it uses; later phones reuse that image
-		[ -e "$trained" ] || [[ $(aot_status) == *"(current)"* ]] || sleep 120
+		[ "$want_aot" = 0 ] || [ -e "$trained" ] || [[ $(aot_status) == *"(current)"* ]] || sleep 120
 		"$HERE/phone.sh" stop "$DEVICE"
 		touch "$trained"
 	fi
-	log "Pre-translating the runtime's code, so apps do not translate it as they run"
-	# the first pass can make more code worth translating: repeat until the image is current
-	# a failed pass leaves the image as it was (still used): a warning, not the end of the setup
-	for _ in 1 2 3; do
-		"$X" aot --device "$DATA/var/device-a64-$DEVICE" update ||
-			echo "setup-vm.sh: a pre-translation pass failed; the phone runs on the image as it is" >&2
-		[[ $(aot_status) == *"(current)"* ]] && break
-	done
-	aot_status
+	if [ "$want_aot" = 1 ]; then
+		log "Pre-translating the runtime's code, so apps do not translate it as they run"
+		# the first pass can make more code worth translating: repeat until the image is current
+		# a failed pass leaves the image as it was (still used): a warning, not the end of the setup
+		for _ in 1 2 3; do
+			"$X" aot --device "$DATA/var/device-a64-$DEVICE" update ||
+				echo "setup-vm.sh: a pre-translation pass failed; the phone runs on the image as it is" >&2
+			[[ $(aot_status) == *"(current)"* ]] && break
+		done
+		aot_status
+	fi
 fi
 
 log "Done. Start the phone with:  scripts/phone.sh start $DEVICE && scripts/phone.sh wait $DEVICE"

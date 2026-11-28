@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- `clipboard` without text prints the pasteboard again, through x86Sim's `pbpaste` (0.6 and later; 0.2 s, also when an
+  app owns the pasteboard). It never reads it from SpringBoard, which hung the phone.
+- New setups use x86Sim 0.7.1 (from 0.5.3): native fast and high fidelity (`x86sim fidelity`), no "(at 2x)" device type
+  to add, and a phone made for an older release is moved to the new setting when setup runs again. Machines set up
+  earlier keep the release they have until `agent-sim setup` runs. Setup does not pre-translate the runtime's code on
+  0.6 and later (`AGENT_SIM_AOT=1` does): the image left the test VM's phone without a frame. x86Sim 0.7.2 and
+  0.7.3 do not boot there either; see docs/KNOWN_ISSUES.md.
+- Setup fetches dynarmic only when one of x86Sim's translator patches applies, so a release that includes them all no
+  longer fails there.
 - `agent-sim doctor` checks what a phone needs on this machine (Linux x86-64, memory, user namespaces, the systemd
   user session, curl, tar, python3, ffmpeg, a Vulkan driver, x86Sim, the hooks, the iOS runtime, the phone and whether
   SpringBoard answers) and says what is missing, so a failed setup can be reported with something to go on.

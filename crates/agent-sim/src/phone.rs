@@ -145,7 +145,7 @@ pub fn home() -> Result<PathBuf> {
 }
 
 /// The x86Sim release new setups install.
-const X86SIM_DEFAULT: &str = "0.5.3";
+const X86SIM_DEFAULT: &str = "0.7.1";
 
 /// x86Sim's launcher (the unpacked AppImage's AppRun): `$X86SIM_VERSION`'s, else the default release's, else the
 /// newest release installed. A machine set up before the default moved keeps working on what it has until

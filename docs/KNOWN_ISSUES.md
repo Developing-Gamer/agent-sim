@@ -25,19 +25,26 @@ x86Sim are reported there with the evidence below.
 | `snapshot` is empty after a fresh setup: `home screen` with no elements, Settings shows only `app com.apple.Preferences`, `wait` times out (issue #8) | UIKit describes controls only while `ApplicationAccessibilityEnabled` and `AccessibilityEnabled` are 1. Setup writes them after the first boot; on one machine both read 0 afterwards, with `AXSDidResetD22Preferences` set, which points to a first-boot preferences migration that ran after the write (not seen on the VMs agent-sim is tested on) | `phone.sh wait` checks both keys after every boot and writes them back (about 1 s); a running phone takes the change at once. Reproduced by setting both to 0 and restarting the phone: before, every snapshot was empty; after, the boot turns them on again |
 | Stopping an app and starting it again at once: the new process dies during startup, and after a few in a row SpringBoard stops answering while `status` says running (issue #6) | Probably RunningBoard and FrontBoard still tearing the old process down when the launch arrives (the reporter's logs show the new process dying before `dyld_sim` finishes), with `x86sim launch --terminate-running-process` stopping and starting inside one command; not confirmed. `status` only looked for the SpringBoard and Darling processes, which a hung phone still has | `launch` waits out 1.5 s after `terminate` of the same app; `launch --logs` stops a running app itself and waits for its exit instead of using that flag. `status` asks SpringBoard and prints `hung` when it stays silent for 8 s, and `snapshot` and any x86Sim command that times out say the phone is hung and that `agent-sim up` restarts it. The startup deaths did not reproduce on an 8 vCPU Zen 3 VM (8 of 8 relaunches lived with and without the pause), so the pause follows the reporter's measurements (8 of 8 with it); a hung SpringBoard was simulated by stopping its process |
 | A document copied into On My iPhone with an accented or non-Latin name is listed in Files but does not open ("not found") | Foundation looks files up by their decomposed (NFD) name, as on HFS+; the Linux disk compares bytes, and Linux tools write composed (NFC) names | `files push` writes every name decomposed; `files ls` and `files rm` take names as typed |
-| `agent-sim clipboard` (read) timed out and left SpringBoard hung until the phone was restarted | The hook read `UIPasteboard.generalPasteboard.string` on SpringBoard's main queue; iOS's paste authorization needs that same queue. Seen on iOS 27.2 with x86Sim 0.5.3 even when agent-sim had set the text itself (the read hung SpringBoard each time) | Reading is not supported: `clipboard` without text says so at once and the hook answers `unsupported` without touching the pasteboard, so an older `agent-sim` cannot hang a phone with the new hook. `clipboard TEXT` still sets it |
+| `agent-sim clipboard` (read) timed out and left SpringBoard hung until the phone was restarted | The hook read `UIPasteboard.generalPasteboard.string` on SpringBoard's main queue; iOS's paste authorization needs that same queue. Seen on iOS 27.2 with x86Sim 0.5.3 even when agent-sim had set the text itself (the read hung SpringBoard each time) | The hook answers `unsupported` without touching the pasteboard, so an older `agent-sim` cannot hang a phone with the new hook. `clipboard` reads it through x86Sim's `pbpaste` (0.6 and later) and, on older releases, says so at once; `clipboard TEXT` sets it through SpringBoard |
 
 ## Open
 
-### x86Sim 0.7.x does not boot a phone on the test VM yet
+### x86Sim 0.7.2 and later, and a pre-translated image on 0.7.x, leave the phone without a frame on the test VM
 
-New setups still install x86Sim 0.5.3. x86Sim 0.7.3 (0.6.0 and 0.7.0 to 0.7.2 not tried) installs and creates a phone on
-the 8 vCPU, Ubuntu 24.04 (kernel 6.8) cloud VM agent-sim is tested on, but the phone never draws a frame: its container's
-launchd starts and stays idle in `launchctl bootstrap -S System`, and `darling shell` into the container finds no
-`shellspawn.sock`. It is the same in system and user-namespace Darling mode and with x86Sim's own boot script and no
-agent-sim settings; Darling itself starts a fresh prefix and runs a command in 2 s, and 0.5.3 boots on the same VM. The
-cause is not known. 0.7.x also moves the shared symlinks in x86Sim's data directory (`cli`, `host`, `darling-prefix`...) to
-the version that ran last, so two versions should not run phones at the same time.
+New setups install x86Sim 0.7.1, the newest release that boots a phone on the 8 vCPU, Ubuntu 24.04 (kernel 6.8) cloud VM
+agent-sim is tested on (0.6.0, 0.7.0 and 0.7.1 do; 0.5.3 did too). With 0.7.2 and 0.7.3 a fresh phone never draws a frame:
+its container's launchd starts and stays idle in `launchctl bootstrap -S System`, and `darling shell` into the container
+finds no `shellspawn.sock`. It is the same in system and user-namespace Darling mode, and Darling alone starts a fresh
+prefix and runs a command in 2 s. On 0.7.1 the same hang appears once x86Sim's `aot update` has built the pre-translated
+image (the pre-translated code is loaded at process start): with the image removed, a fresh phone boots in 24 s. So setup
+no longer builds it on x86Sim 0.6 and later (`AGENT_SIM_AOT=1` does), and phones run without it: warm boot 22 s, Settings
+6.4 s the first time and 4.8 s after, a local Safari page 13.8 s, Maps 8 s on that VM. The cause is not known; it may be
+this VM's filesystem or memory, not x86Sim.
+
+x86Sim keeps its shared symlinks (`cli`, `host`, `darling-prefix`...) in its data directory pointing at the version that
+ran last, so two versions must not share one data directory (`X86SIM_DATA`, `X86SIM_CACHE`). A phone killed while Darling's
+system mode is setting up its overlay can leave a root-owned `fuse-overlayfs` in the phone's systemd unit, and the next
+start then fails with "already loaded"; `sudo pkill fuse-overlayfs` and `systemctl --user reset-failed` clear it.
 
 ### Lost dead-name notifications (root cause, in Darling)
 

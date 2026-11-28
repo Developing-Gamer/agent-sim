@@ -71,7 +71,7 @@ Status: **same** as on a Mac, **close** (works, with a noted difference), **gap*
 | Shake, memory warning | yes | yes | same |
 | Dark mode (`simctl ui appearance`) | yes | `agent-sim appearance dark` | same |
 | Status bar overrides (`simctl status_bar`) | yes | `agent-sim status-bar --time 9:41 --battery 100 --charging`; cellular and Wi-Fi bars not yet | close |
-| Clipboard (`simctl pbcopy` / `pbpaste`) | yes | `agent-sim clipboard TEXT` sets it; reading it is not supported (see [KNOWN_ISSUES](KNOWN_ISSUES.md)) | gap |
+| Clipboard (`simctl pbcopy` / `pbpaste`) | yes | `agent-sim clipboard TEXT` sets it, `agent-sim clipboard` prints it (x86Sim 0.6 or later; older releases cannot read it, see [KNOWN_ISSUES](KNOWN_ISSUES.md)) | same |
 | Screenshots (`simctl io screenshot`) | yes | `agent-sim screenshot` | same |
 | Screen recording (`simctl io recordVideo`) | yes | `agent-sim record` (x86Sim's recorder wrote empty files) | same |
 | Erase a device (`simctl erase`) | yes | `agent-sim erase` | same |

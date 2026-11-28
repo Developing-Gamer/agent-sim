@@ -1186,9 +1186,8 @@ pub fn effects(name: &str, mode: &str) -> Result<String> {
     Ok(format!("effects {mode}"))
 }
 
-/// Sets the general pasteboard through SpringBoard. Reading arbitrary third-party clipboard content
-/// synchronously from SpringBoard's main queue deadlocks iOS's paste-permission flow, so reads return
-/// an explicit error instead of hanging the phone.
+/// The general pasteboard: set through SpringBoard, read through x86Sim's `pbpaste` (0.6 and later). Reading it from
+/// SpringBoard's main queue deadlocks iOS's paste-permission flow and hangs the phone, so that is never done.
 pub fn clipboard(dev: &Device, set: Option<&str>) -> Result<String> {
     match set {
         Some(t) => {
@@ -1198,10 +1197,20 @@ pub fn clipboard(dev: &Device, set: Option<&str>) -> Result<String> {
             }
             Ok("clipboard set".into())
         }
-        None => bail!(
-            "reading the clipboard is not supported yet (iOS paste authorization blocks SpringBoard's main thread; `agent-sim clipboard TEXT` still sets it)"
-        ),
+        None => match phone::x86sim_ok(dev, &["pbpaste"]) {
+            Ok(text) => Ok(text),
+            Err(e) if is_unknown_command(&format!("{e:#}")) => bail!(
+                "reading the clipboard needs x86Sim 0.6 or later (`agent-sim setup` installs a current release); \
+                 `agent-sim clipboard TEXT` still sets it"
+            ),
+            Err(e) => Err(e),
+        },
     }
+}
+
+/// x86Sim's answer to a command an older release does not have.
+fn is_unknown_command(msg: &str) -> bool {
+    msg.contains("unknown command")
 }
 
 /// Overrides status bar items for clean screenshots, as `simctl status_bar override`; `clear` puts them back.
@@ -1523,12 +1532,11 @@ pub fn record(dev: &Device, out: &Path, secs: f64, fps: u32) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        RELAUNCH_SETTLE, TypeStep, clipboard, drag_progress, launch_args, parse_lat_lon, record_vf,
-        rotate, scroll_segment, settle_left, type_steps, upright_bounds, upright_to_panel,
-        validate_key_text, validate_pinch, validate_privacy, validate_push_payload,
+        RELAUNCH_SETTLE, TypeStep, drag_progress, is_unknown_command, launch_args, parse_lat_lon,
+        record_vf, rotate, scroll_segment, settle_left, type_steps, upright_bounds,
+        upright_to_panel, validate_key_text, validate_pinch, validate_privacy,
+        validate_push_payload,
     };
-    use crate::device::Device;
-    use std::path::PathBuf;
     use std::time::Duration;
 
     #[test]
@@ -1663,12 +1671,11 @@ mod tests {
     }
 
     #[test]
-    fn clipboard_read_returns_error_without_signalling_springboard() {
-        let dev = Device {
-            dir: PathBuf::from("/nonexistent"),
-        };
-        let err = clipboard(&dev, None).unwrap_err().to_string();
-        assert!(err.contains("not supported"), "unexpected error: {err}");
+    fn an_older_x86sim_is_told_from_a_failing_one() {
+        assert!(is_unknown_command(
+            "x86sim pbpaste: x86sim: unknown command pbpaste"
+        ));
+        assert!(!is_unknown_command("x86sim pbpaste: no answer in 50 s"));
     }
 
     use crate::phone::Screen;
