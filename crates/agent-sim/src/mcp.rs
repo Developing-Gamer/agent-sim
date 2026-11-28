@@ -29,7 +29,9 @@ fn tools() -> Value {
         tool(
             "snapshot",
             "Read the phone's screen: one line per accessibility element (role, label, value, id, center point) with a reference like @e3 that tap accepts. Covers the app in front, system alerts, the home screen and the status bar.",
-            json!({}),
+            json!({
+                "no_occlusion": {"type": "boolean", "description": "Include elements occluded by opaque sibling views"}
+            }),
             &[]
         ),
         tool(
@@ -314,7 +316,7 @@ fn b64(data: &[u8]) -> String {
 /// The result of an action, then the screen it led to.
 fn then_snapshot(dev: &Device, done: String) -> Result<Value> {
     std::thread::sleep(Duration::from_millis(900));
-    let snap = cmd::snapshot(dev, false).unwrap_or_else(|e| format!("(no snapshot: {e:#})"));
+    let snap = cmd::snapshot(dev, false, false).unwrap_or_else(|e| format!("(no snapshot: {e:#})"));
     Ok(json!([{"type": "text", "text": format!("{done}\n\n{snap}")}]))
 }
 
@@ -332,7 +334,13 @@ fn call(default_device: &str, name: &str, args: &Value) -> Result<Value> {
     let dev = Device::find(&dev_name)?;
     let text = |t: String| Ok(json!([{"type": "text", "text": t}]));
     match name {
-        "snapshot" => text(cmd::snapshot(&dev, false)?),
+        "snapshot" => {
+            let no_occ = args
+                .get("no_occlusion")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            text(cmd::snapshot(&dev, false, no_occ)?)
+        }
         "screenshot" => Ok(json!([{
             "type": "image",
             "mimeType": "image/png",

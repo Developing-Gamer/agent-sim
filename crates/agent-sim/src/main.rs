@@ -66,6 +66,9 @@ enum Command {
         /// Everything as JSON (frames, ids, hints, states).
         #[arg(long)]
         json: bool,
+        /// Include elements occluded by opaque sibling views (disables opaque-sibling pruning).
+        #[arg(long)]
+        no_occlusion: bool,
     },
     /// Save the screen as a PNG.
     Screenshot {
@@ -448,7 +451,7 @@ fn main() -> Result<()> {
         )),
         Command::Down => cmd::down(&name),
         Command::Status => cmd::status(),
-        Command::Snapshot { json } => say(cmd::snapshot(&dev()?, json)),
+        Command::Snapshot { json, no_occlusion } => say(cmd::snapshot(&dev()?, json, no_occlusion)),
         Command::Screenshot { out } => say(cmd::screenshot(&dev()?, out)),
         Command::Tap { target, hold_ms } => say(cmd::tap(&dev()?, &target, hold_ms)),
         Command::Type { text, keys } => {
