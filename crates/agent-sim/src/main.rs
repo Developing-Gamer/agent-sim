@@ -145,6 +145,35 @@ enum Command {
         #[arg(last = true)]
         args: Vec<String>,
     },
+    /// Run XCTest and XCUITest bundles on the phone, as `xcodebuild test-without-building` does (x86Sim's
+    /// `x86sim test`, 0.7 or later; XCTest's frameworks come from Xcode, see docs/PARITY.md). Exit status: 0 when
+    /// every test passed, 1 when one failed, 2 when nothing could run.
+    Test {
+        /// An .xctestrun from `xcodebuild build-for-testing` (its products next to it).
+        #[arg(long)]
+        xctestrun: Option<String>,
+        /// The app: its unit tests (PlugIns/*.xctest), or the app a UI test runner drives.
+        #[arg(long)]
+        app: Option<String>,
+        /// A test bundle (.xctest): logic tests, or one of the app's.
+        #[arg(long)]
+        test_bundle: Option<String>,
+        /// An XCUITest runner (<Name>UITests-Runner.app); give the app with --app.
+        #[arg(long)]
+        ui_test_runner: Option<String>,
+        /// A Swift package directory: its tests are built here and run.
+        #[arg(long)]
+        spm: Option<String>,
+        /// Run only this test (Target/Class/test; repeatable).
+        #[arg(long)]
+        only_testing: Vec<String>,
+        /// Skip this test (repeatable).
+        #[arg(long)]
+        skip_testing: Vec<String>,
+        /// Also write a JUnit report here.
+        #[arg(long)]
+        junit: Option<String>,
+    },
     /// An app's os_log messages and the report of its last run (a crash's cause and backtrace).
     Logs {
         bundle_id: String,
@@ -330,6 +359,32 @@ fn main() -> Result<()> {
                 env.push(("MODEL", m.as_str()));
             }
             phone::script("setup-vm.sh", &[], &env)
+        }
+        Command::Test {
+            xctestrun,
+            app,
+            test_bundle,
+            ui_test_runner,
+            spm,
+            only_testing,
+            skip_testing,
+            junit,
+        } => {
+            let args = cmd::test_args(&cmd::TestRun {
+                xctestrun,
+                app,
+                test_bundle,
+                ui_test_runner,
+                spm,
+                only_testing,
+                skip_testing,
+                junit,
+            })?;
+            let code = cmd::test_streamed(&dev()?, &args)?;
+            if code != 0 {
+                std::process::exit(code);
+            }
+            Ok(())
         }
         Command::Doctor => {
             let checks = doctor::run(&name);

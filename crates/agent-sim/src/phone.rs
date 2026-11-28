@@ -197,6 +197,13 @@ pub fn x86sim() -> Result<PathBuf> {
 
 /// Runs `x86sim ARGS...` against this phone.
 pub fn x86sim_run(dev: &Device, args: &[&str]) -> Result<Output> {
+    x86sim_command(dev, args)?
+        .output()
+        .context("running x86sim")
+}
+
+/// `x86sim ARGS...` against this phone, not yet started (to stream its output or wait on it).
+pub fn x86sim_command(dev: &Device, args: &[&str]) -> Result<Command> {
     let ring = dev.ring_path().ok();
     let mut cmd = Command::new(x86sim()?);
     cmd.arg("x86sim")
@@ -206,7 +213,7 @@ pub fn x86sim_run(dev: &Device, args: &[&str]) -> Result<Output> {
     if let Some(r) = ring {
         cmd.env("SIMFB_RING_LINUX", r);
     }
-    cmd.output().context("running x86sim")
+    Ok(cmd)
 }
 
 /// Like x86sim_run, but fails with x86Sim's own message when it fails.

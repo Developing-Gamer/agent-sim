@@ -146,6 +146,21 @@ fn tools() -> Value {
             &["bundle_id"]
         ),
         tool(
+            "test",
+            "Run XCTest and XCUITest bundles on the phone, as xcodebuild test-without-building does (x86Sim 0.7 or later; XCTest's frameworks come from Xcode). Give an xctestrun, an app (its unit tests), a test_bundle (logic tests), a ui_test_runner with its app, or an spm package directory. Returns the exit status (0 all passed, 1 a test failed, 2 nothing ran) and XCTest's output, with the path of results.json and junit.xml.",
+            json!({
+                "xctestrun": {"type": "string"},
+                "app": {"type": "string"},
+                "test_bundle": {"type": "string"},
+                "ui_test_runner": {"type": "string"},
+                "spm": {"type": "string"},
+                "only_testing": {"type": "array", "items": {"type": "string"}},
+                "skip_testing": {"type": "array", "items": {"type": "string"}},
+                "junit": {"type": "string"}
+            }),
+            &[]
+        ),
+        tool(
             "install",
             "Install an app from a path on this machine or an http(s) URL: an .ipa (device builds are converted for the simulator; App Store downloads are encrypted and refused), a simulator .app, or an archive holding one (.tar.gz, .zip, as EAS Build and CI artifacts come).",
             json!({"path": {"type": "string"}}),
@@ -420,6 +435,30 @@ fn call(default_device: &str, name: &str, args: &Value) -> Result<Value> {
             args.get("lines").and_then(Value::as_u64).unwrap_or(100) as usize,
             args.get("grep").and_then(Value::as_str),
         )?),
+        "test" => {
+            let st = |k: &str| args.get(k).and_then(Value::as_str).map(String::from);
+            let list = |k: &str| -> Vec<String> {
+                args.get(k)
+                    .and_then(Value::as_array)
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
+            let a = cmd::test_args(&cmd::TestRun {
+                xctestrun: st("xctestrun"),
+                app: st("app"),
+                test_bundle: st("test_bundle"),
+                ui_test_runner: st("ui_test_runner"),
+                spm: st("spm"),
+                only_testing: list("only_testing"),
+                skip_testing: list("skip_testing"),
+                junit: st("junit"),
+            })?;
+            text(cmd::test_captured(&dev, &a)?)
+        }
         "install" => text(cmd::install(&dev, &PathBuf::from(s(args, "path")?))?),
         "uninstall" => text(cmd::uninstall(&dev, s(args, "bundle_id")?)?),
         "apps" => text(cmd::apps(
@@ -617,6 +656,7 @@ mod tests {
             "status_bar",
             "clipboard",
             "logs",
+            "test",
             "install",
             "uninstall",
             "apps",

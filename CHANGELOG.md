@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- `agent-sim test` (and the MCP tool `test`) runs XCTest and XCUITest bundles on the phone through x86Sim 0.7's
+  `x86sim test`: an `.xctestrun` from `xcodebuild build-for-testing`, an app's unit tests, logic tests, a UI test
+  runner with its app, or a Swift package; `--only-testing`, `--skip-testing`, `--junit`. Exit status 0 when every
+  test passed, 1 when one failed, 2 when nothing could run. XCTest's frameworks come from Xcode, which x86Sim sets up
+  from an Xcode .xip.
+- A phone that draws no frame in 3 minutes is restarted with a new Darling prefix (a machine that went down with the
+  phone running left one that Darling's server died on), and stopping a phone ends root-owned leftovers in its unit
+  when sudo needs no password, so the restart is not refused as "already loaded".
 - `clipboard` without text prints the pasteboard again, through x86Sim's `pbpaste` (0.6 and later; 0.2 s, also when an
   app owns the pasteboard). It never reads it from SpringBoard, which hung the phone.
 - New setups use x86Sim 0.7.3 (from 0.5.3): about half the memory per phone, native fast and high fidelity

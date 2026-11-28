@@ -63,6 +63,15 @@ export DBUS_SESSION_BUS_ADDRESS=${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTI
 stop_phone() {
 	systemctl --user stop "$UNIT" 2>/dev/null || true
 	"$X" shell -c "A64_DEVICE=$DIR A64_STOP_ONLY=1 cli/libexec/arm64/boot-a64.sh" >/dev/null 2>&1 || true
+	# Darling's system mode leaves root-owned processes (fuse-overlayfs) in the unit, which the user's systemd cannot
+	# end; the unit then stays loaded and the next start is refused ("already loaded"). Only this unit's processes,
+	# and only when sudo needs no password.
+	local cg procs
+	cg=$(systemctl --user show -p ControlGroup --value "$UNIT" 2>/dev/null || true)
+	if [ -n "$cg" ] && [ -r "/sys/fs/cgroup$cg/cgroup.procs" ]; then
+		procs=$(cat "/sys/fs/cgroup$cg/cgroup.procs" 2>/dev/null || true)
+		[ -z "$procs" ] || sudo -n kill -9 $procs 2>/dev/null || true
+	fi
 	systemctl --user reset-failed "$UNIT" 2>/dev/null || true
 }
 
@@ -137,6 +146,12 @@ ensure_penv() {
 # the right one.
 fix_prefix() {
 	local pre=$CACHE/a64prefix-$DEVICE
+	# a restart after the phone drew no frame: the prefix (a cache) can be left broken by a machine that went down with
+	# the phone running, and Darling's server then dies at every start; it is made anew
+	if [ "${AGENT_SIM_FRESH_PREFIX:-0}" = 1 ] && [ -e "$pre" ]; then
+		echo "phone.sh: $DEVICE: making a new Darling prefix" >&2
+		rm -rf "$pre" "$pre.workdir" 2>/dev/null || sudo -n rm -rf "$pre" "$pre.workdir" || true
+	fi
 	# a prefix made under umask 0002 has group-writable system folders, which launchd refuses (see umask above)
 	[ -d "$pre/System" ] && find "$pre/System" -maxdepth 3 -type d -user "$(id -u)" -perm /022 -exec chmod go-w {} + 2>/dev/null
 	[ -e /opt/x86sim/darling/.x86sim-complete ] || return 0
@@ -276,8 +291,8 @@ wait)
 			# no first frame in 3 minutes: Darling never came up
 			if [ $(($(date +%s) - ring_wait)) -gt 180 ]; then
 				[ "$restarted" = 0 ] || { echo "phone.sh: $DEVICE: Darling did not start" >&2; exit 1; }
-				echo "phone.sh: $DEVICE shows no frame after 3 minutes; restarting it" >&2
-				"$0" start "$DEVICE" >/dev/null
+				echo "phone.sh: $DEVICE shows no frame after 3 minutes; restarting it with a new Darling prefix" >&2
+				AGENT_SIM_FRESH_PREFIX=1 "$0" start "$DEVICE" >/dev/null
 				restarted=1
 				ring_wait=$(date +%s)
 			fi

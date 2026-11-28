@@ -133,7 +133,7 @@ Pick the checks you need before putting agent-sim in CI:
 | Check | agent-sim today |
 |---|---|
 | Agent-driven or scripted UI checks (launch, tap, type, read the screen, record) | yes |
-| XCUITest suites | not yet |
+| XCTest and XCUITest suites | `agent-sim test` runs Xcode-built bundles (`--xctestrun`, `--ui-test-runner` with `--app`) through x86Sim 0.7; needs XCTest's frameworks from Xcode on the machine; not yet run end to end here |
 | Real-device behavior (camera, push delivery, signing, FairPlay/DRM, device performance) | no: use a real device |
 
 [docs/PARITY.md](docs/PARITY.md) compares every feature with Apple's Simulator on a Mac.

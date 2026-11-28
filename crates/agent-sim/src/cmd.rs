@@ -1218,6 +1218,120 @@ pub fn clipboard(dev: &Device, set: Option<&str>) -> Result<String> {
     }
 }
 
+/// What to test, as `x86sim test` takes it (x86Sim's docs/TESTING.md).
+#[derive(Default)]
+pub struct TestRun {
+    /// an .xctestrun from `xcodebuild build-for-testing`, its products next to it
+    pub xctestrun: Option<String>,
+    /// the app: hosts unit tests (its PlugIns/*.xctest), or is the app under test of a UI test runner
+    pub app: Option<String>,
+    /// a test bundle (.xctest): logic tests, or one of the app's
+    pub test_bundle: Option<String>,
+    /// an XCUITest runner (<Name>UITests-Runner.app); needs `app`
+    pub ui_test_runner: Option<String>,
+    /// a Swift package directory: its tests built here and run
+    pub spm: Option<String>,
+    pub only_testing: Vec<String>,
+    pub skip_testing: Vec<String>,
+    /// where to write a JUnit report too
+    pub junit: Option<String>,
+}
+
+/// The `x86sim test` command line for a run.
+pub fn test_args(t: &TestRun) -> Result<Vec<String>> {
+    if t.ui_test_runner.is_some() && t.app.is_none() {
+        bail!("a UI test runner needs the app it tests (--app)");
+    }
+    if t.xctestrun.is_none() && t.app.is_none() && t.test_bundle.is_none() && t.spm.is_none() {
+        bail!(
+            "nothing to test: give an .xctestrun, an app, a test bundle, a UI test runner with its app, or a Swift package"
+        );
+    }
+    let mut a = vec!["test".to_string()];
+    // x86Sim runs from its data directory: paths are made absolute here, from where agent-sim was started
+    let mut opt = |flag: &str, v: &Option<String>| {
+        if let Some(v) = v {
+            a.push(flag.into());
+            a.push(
+                std::path::absolute(v)
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_else(|_| v.clone()),
+            );
+        }
+    };
+    opt("--xctestrun", &t.xctestrun);
+    opt("--ui-test-runner", &t.ui_test_runner);
+    opt("--app", &t.app);
+    opt("--test-bundle", &t.test_bundle);
+    opt("--spm", &t.spm);
+    opt("--junit", &t.junit);
+    for o in &t.only_testing {
+        a.extend(["--only-testing".into(), o.clone()]);
+    }
+    for s in &t.skip_testing {
+        a.extend(["--skip-testing".into(), s.clone()]);
+    }
+    Ok(a)
+}
+
+const TEST_NEEDS: &str =
+    "running tests needs x86Sim 0.7 or later (`agent-sim setup` installs a current release)";
+
+/// Runs XCTest and XCUITest bundles on the phone with x86Sim's `x86sim test`, its output passed through as it comes.
+/// Returns x86Sim's exit status: 0 when every test passed, 1 when one failed, 2 when nothing could run.
+pub fn test_streamed(dev: &Device, args: &[String]) -> Result<i32> {
+    phone::is_running(dev)
+        .then_some(())
+        .ok_or_else(|| phone::not_running(dev))?;
+    let a: Vec<&str> = args.iter().map(String::as_str).collect();
+    let mut child = phone::x86sim_command(dev, &a)?
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .context("running x86sim test")?;
+    // stderr is read line by line so an x86Sim without `test` can be told apart; everything else goes through
+    let mut unknown = false;
+    if let Some(err) = child.stderr.take() {
+        use std::io::BufRead;
+        for line in std::io::BufReader::new(err).lines().map_while(Result::ok) {
+            if is_unknown_command(&line) {
+                unknown = true;
+            }
+            eprintln!("{line}");
+        }
+    }
+    let code = child.wait()?.code().unwrap_or(2);
+    if unknown {
+        bail!("{TEST_NEEDS}");
+    }
+    Ok(code)
+}
+
+/// The same, with the output kept (for the MCP server): the status line, then the run's output (its tail when long).
+pub fn test_captured(dev: &Device, args: &[String]) -> Result<String> {
+    if !phone::is_running(dev) {
+        return Err(phone::not_running(dev));
+    }
+    let a: Vec<&str> = args.iter().map(String::as_str).collect();
+    let out = phone::x86sim_run(dev, &a)?;
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    if is_unknown_command(&text) {
+        bail!("{TEST_NEEDS}");
+    }
+    let code = out.status.code().unwrap_or(2);
+    let status = match code {
+        0 => "every test passed",
+        1 => "a test failed",
+        _ => "nothing could run",
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    let tail = lines[lines.len().saturating_sub(200)..].join("\n");
+    Ok(format!("x86sim test exit {code}: {status}\n{tail}"))
+}
+
 /// x86Sim's answer to a command an older release does not have.
 fn is_unknown_command(msg: &str) -> bool {
     msg.contains("unknown command")
@@ -1542,9 +1656,9 @@ pub fn record(dev: &Device, out: &Path, secs: f64, fps: u32) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        RELAUNCH_SETTLE, TypeStep, drag_progress, is_unknown_command, launch_args, parse_lat_lon,
-        record_vf, rotate, scroll_segment, settle_left, type_steps, upright_bounds,
-        upright_to_panel, validate_key_text, validate_pinch, validate_privacy,
+        RELAUNCH_SETTLE, TestRun, TypeStep, drag_progress, is_unknown_command, launch_args,
+        parse_lat_lon, record_vf, rotate, scroll_segment, settle_left, test_args, type_steps,
+        upright_bounds, upright_to_panel, validate_key_text, validate_pinch, validate_privacy,
         validate_push_payload,
     };
     use std::time::Duration;
@@ -1678,6 +1792,37 @@ mod tests {
         assert!(validate_push_payload(None, no_target).is_err());
         assert!(validate_push_payload(Some("com.other.app"), br#"{"alert":"hi"}"#).is_err());
         assert!(validate_push_payload(Some("com.other.app"), b"not json").is_err());
+    }
+
+    #[test]
+    fn test_runs_map_to_x86sim_test_arguments() {
+        let ui = TestRun {
+            ui_test_runner: Some("/b/R.app".into()),
+            app: Some("/b/A.app".into()),
+            only_testing: vec!["AUITests/LoginTests/testBadPassword".into()],
+            junit: Some("/tmp/junit.xml".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            test_args(&ui).unwrap(),
+            [
+                "test",
+                "--ui-test-runner",
+                "/b/R.app",
+                "--app",
+                "/b/A.app",
+                "--junit",
+                "/tmp/junit.xml",
+                "--only-testing",
+                "AUITests/LoginTests/testBadPassword"
+            ]
+        );
+        let runner_alone = TestRun {
+            ui_test_runner: Some("/b/R.app".into()),
+            ..Default::default()
+        };
+        assert!(test_args(&runner_alone).is_err());
+        assert!(test_args(&TestRun::default()).is_err());
     }
 
     #[test]

@@ -49,7 +49,7 @@ Status: **same** as on a Mac, **close** (works, with a noted difference), **gap*
 | Web pages, including web workers | yes | yes (x86Sim patch for workers) | same |
 | Apps with crash reporters at full speed | yes | yes (x86Sim patch) | same |
 | App logs (Console, `simctl spawn log`) | yes | `agent-sim logs` (os_log of an app launched with `--logs`, and the crash report of its last run) | close |
-| XCTest / XCUITest runs (`xcodebuild test`) | yes | not yet | gap |
+| XCTest / XCUITest runs (`xcodebuild test`) | yes | `agent-sim test` (and MCP `test`): x86Sim 0.7's `x86sim test` with an `.xctestrun`, an app's unit tests, logic tests or a UI test runner and its app; results.json and JUnit. Needs XCTest's frameworks from Xcode (`x86sim dev setup sdk --xip Xcode.xip`) and bundles Xcode built; not yet run end to end on agent-sim's test VM | close |
 | Debugger (lldb attach) and Safari Web Inspector | yes | not yet | gap |
 
 ### Simulated hardware and system features
@@ -103,6 +103,6 @@ Status: **same** as on a Mac, **close** (works, with a noted difference), **gap*
 ## Next, in order
 
 1. The software keyboard (show it as Cmd-K does on a Mac), and status bar signal bars.
-2. XCTest and XCUITest runs, so existing UI test suites run unchanged.
+2. An XCTest and XCUITest run end to end on the test VM (`agent-sim test` passes through to x86Sim; it needs Xcode's XCTest frameworks and Xcode-built bundles).
 3. A debugger story (lldb, Web Inspector).
 4. Siri, Maps tiles (x86Sim's `fetch-macos-host.sh` provides the map data from a Mac), and device cloning.
