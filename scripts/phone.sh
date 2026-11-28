@@ -28,6 +28,11 @@
 # The frame ring lives under x86Sim's cache directory (~/.cache/x86sim) rather than /run/user: x86Sim's container does not always see the host's
 # /run/user (no login session on a server), and then no frame ever reaches the host.
 set -Eeuo pipefail
+# Files and folders x86Sim makes for the phone must not be group-writable: since x86Sim 0.7.2 the boot creates
+# System/Library/LaunchDaemons in the phone's Darling prefix, and Darling's launchd loads no system daemon from a folder
+# others can write. Under a umask of 0002 (Ubuntu's default for a user with their own group) the phone then never drew
+# a frame. The phone's systemd unit gets the same umask below (it takes the user manager's, not this shell's).
+umask 022
 
 ACTION=${1:?usage: phone.sh start|wait|stop|status [DEVICE]}
 DEVICE=${2:-${DEVICE:-p}}
@@ -35,7 +40,7 @@ ROOT=${AGENT_SIM_HOME:-$HOME/.local/share/agent-sim}
 if [ -z "${X86SIM_VERSION:-}" ]; then
 	# the default release, else the newest one installed (a machine set up before the default moved keeps working
 	# until setup runs again)
-	X86SIM_VERSION=0.7.1
+	X86SIM_VERSION=0.7.3
 	if [ ! -x "$ROOT/x86sim-$X86SIM_VERSION/AppRun" ]; then
 		newest=$(find "$ROOT" -maxdepth 2 -path "$ROOT/x86sim-*/AppRun" 2>/dev/null | sed 's|.*/x86sim-||; s|/AppRun$||' | sort -V | tail -1)
 		[ -n "$newest" ] && X86SIM_VERSION=$newest
@@ -111,8 +116,9 @@ ensure_penv() {
 	grep -qs '^com.apple.WebKit.WebContent .*GIGACAGE_ENABLED=0' "$PENV" ||
 		echo "com.apple.WebKit.WebContent GIGACAGE_ENABLED=0" >>"$PENV"
 	local keep base h log=""
-	keep=$(grep -v 'libagentsim-' "$PENV" || true)
+	keep=$(grep -v 'libagentsim-\|agentsim-live-room' "$PENV" || true)
 	printf '%s\n' "$keep" | sed '/^$/d' >"$PENV"
+	live_room_lines
 	[ "${AGENT_SIM_HOOKS:-1}" = 1 ] && [ -f "$HOOKS/libagentsim-ax.dylib" ] || return 0
 	case $HOOKS in *[[:space:]]*) echo "phone.sh: hooks skipped: their path has a space ($HOOKS)" >&2; return 0 ;; esac
 	base=$(sed -n 's/^DYLD_INSERT_LIBRARIES=//p' "$DIR/sim.env")
@@ -131,6 +137,8 @@ ensure_penv() {
 # the right one.
 fix_prefix() {
 	local pre=$CACHE/a64prefix-$DEVICE
+	# a prefix made under umask 0002 has group-writable system folders, which launchd refuses (see umask above)
+	[ -d "$pre/System" ] && find "$pre/System" -maxdepth 3 -type d -user "$(id -u)" -perm /022 -exec chmod go-w {} + 2>/dev/null
 	[ -e /opt/x86sim/darling/.x86sim-complete ] || return 0
 	[ "${X86SIM_DARLING_MODE:-auto}" != userns ] || return 0
 	[ -d "$pre.workdir/private" ] && [ "$(stat -c %u "$pre.workdir/private")" != 0 ] || return 0
@@ -151,6 +159,43 @@ runtime_root() {
 		[ -x "$rr/usr/bin/defaults" ] && { echo "$rr"; return; }
 	done
 	return 1
+}
+
+# Apps and ExtensionKit extensions translate their own code as they run, without x86Sim's pre-translated image, in a full code
+# cache of their own. x86Sim gives each process one code cache of at most 2000 MB and puts the image (up to about
+# 1736 MB) in it, leaving about 260 MB for what the process translates itself. With app accessibility on, which
+# snapshot needs, apps ran past that (SpringBoard, Safari, Maps, Photos, Files, the photo picker): dynarmic stopped them
+# ("shared code cache full"), and SpringBoard restarted over and over. Daemons, most of a phone's memory, keep the
+# image. Programs are named by executable, from the runtime's and the installed apps' bundles; AGENT_SIM_JIT_LIVE=0
+# keeps the image for every program.
+live_room_lines() {
+	[ "${AGENT_SIM_JIT_LIVE:-1}" = 1 ] || return 0
+	local rr
+	rr=$(runtime_root) || rr=
+	python3 -I - "$rr" "$DIR/data/Containers/Bundle/Application" <<'PY' >>"$PENV" || true
+import glob, os, plistlib, sys
+rr, installed = sys.argv[1:3]
+roots = []
+if rr:
+    roots += glob.glob(os.path.join(rr, "Applications", "*.app"))
+    roots += glob.glob(os.path.join(rr, "System/Library/CoreServices", "*.app"))
+    roots += glob.glob(os.path.join(rr, "System/Library/ExtensionKit/Extensions", "*.appex"))
+roots += glob.glob(os.path.join(installed, "*", "*.app"))
+# apps and ExtensionKit's extensions (the photo picker, web content...); not the widget and plug-in bundles inside
+# apps and frameworks, many of which run at idle and are better off sharing the image
+bundles = roots
+names = set()
+for b in bundles:
+    try:
+        with open(os.path.join(b, "Info.plist"), "rb") as f:
+            exe = plistlib.load(f).get("CFBundleExecutable")
+    except Exception:
+        continue
+    if exe and " " not in exe:
+        names.add(exe)
+for n in sorted(names):
+    print(f"{n} X86SIM_A64_AOT=0 X86SIM_A64_CODECACHE_MB=2000 agentsim-live-room")
+PY
 }
 
 # `agent-sim snapshot` reads what UIKit describes, and UIKit describes controls only while app accessibility is on
@@ -209,7 +254,7 @@ start)
 	elif ! x86sim_config_sets X86SIM_METAL; then
 		passthrough+=(--setenv=X86SIM_METAL=backboardd,iconservicesagent)
 	fi
-	systemd-run --user --quiet --unit="$UNIT" --collect "${passthrough[@]}" \
+	systemd-run --user --quiet --unit="$UNIT" --collect --property=UMask=0022 "${passthrough[@]}" \
 		--setenv=SIMFB_RING="/Volumes/SystemRoot$RING" \
 		--setenv=LP_NUM_THREADS="${LP_NUM_THREADS:-$(n=$(($(nproc) - 2)); echo $((n < 2 ? 2 : n > 6 ? 6 : n)))}" \
 		--setenv=A64_JOBS="${A64_JOBS:-slim}" \
@@ -257,6 +302,10 @@ wait)
 		fi
 		prev=$cpu
 	done
+	;;
+penv)
+	# after an install: the new app's executable gets its own code cache too (live_room_lines)
+	ensure_penv
 	;;
 stop)
 	stop_phone

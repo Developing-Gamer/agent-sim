@@ -5,22 +5,21 @@
 #   scripts/setup-vm.sh
 #
 # Environment:
-#   X86SIM_VERSION   x86Sim release (default 0.7.1)
+#   X86SIM_VERSION   x86Sim release (default 0.7.3)
 #   RUNTIME_BUILD    iOS runtime build from Apple's catalogue (default 24B8117, iOS 27.2); the phone is created on
 #                    it, and a phone already made on another runtime needs another DEVICE
 #   DEVICE, MODEL    the phone to create (default p, "iPhone 17 Pro")
 #   FIDELITY=high    a phone that looks exactly like Apple's simulator: the model's own pixel density ("iPhone 17 Pro",
 #                    3x) and every visual effect (blur, transparency, motion). The default, fast, draws at 2x with
 #                    Reduce Transparency and Reduce Motion on: it scrolls faster (docs/BENCHMARKS.md).
-#   AGENT_SIM_AOT=1  also pre-translate the runtime's code (x86Sim's `aot update`) on x86Sim 0.6 and later, where it is
-#                    off by default: on the cloud VM agent-sim is tested on, a phone with that image never reached its
-#                    home screen (docs/KNOWN_ISSUES.md). Older releases always pre-translate.
 #   AGENT_SIM_PATCH_X86SIM=0   keep x86Sim's own translator (skips the fixes in patches/x86sim)
 #
 # Apple's iOS runtime is downloaded from Apple onto this machine (about 8 GB) and never leaves it.
 set -Eeuo pipefail
+# what x86Sim creates for the phone must not be group-writable (scripts/phone.sh says why)
+umask 022
 
-X86SIM_VERSION=${X86SIM_VERSION:-0.7.1}
+X86SIM_VERSION=${X86SIM_VERSION:-0.7.3}
 RUNTIME_BUILD=${RUNTIME_BUILD:-24B8117}
 DEVICE=${DEVICE:-p}
 FIDELITY=${FIDELITY:-fast}
@@ -258,9 +257,7 @@ PY
 	done
 	touch "$granted"
 }
-want_aot=1
-if [ "$NATIVE_FIDELITY" = 1 ] && [ "${AGENT_SIM_AOT:-0}" != 1 ]; then want_aot=0; fi
-if { [ "$want_aot" = 1 ] && [[ $(aot_status) != *"(current)"* ]]; } || [ ! -e "$calm" ] || [ ! -e "$granted" ]; then
+if [[ $(aot_status) != *"(current)"* ]] || [ ! -e "$calm" ] || [ ! -e "$granted" ]; then
 	if [ ! -e "$trained" ] || [ ! -e "$calm" ] || [ ! -e "$granted" ]; then
 		log "Booting the phone once: it learns what runs, gets Reduce Transparency and Motion, and its apps' permissions"
 		"$HERE/phone.sh" start "$DEVICE"
@@ -268,21 +265,19 @@ if { [ "$want_aot" = 1 ] && [[ $(aot_status) != *"(current)"* ]]; } || [ ! -e "$
 		reduce_effects
 		grant_builtin
 		# a first phone runs a while so the pre-translation learns what it uses; later phones reuse that image
-		[ "$want_aot" = 0 ] || [ -e "$trained" ] || [[ $(aot_status) == *"(current)"* ]] || sleep 120
+		[ -e "$trained" ] || [[ $(aot_status) == *"(current)"* ]] || sleep 120
 		"$HERE/phone.sh" stop "$DEVICE"
 		touch "$trained"
 	fi
-	if [ "$want_aot" = 1 ]; then
-		log "Pre-translating the runtime's code, so apps do not translate it as they run"
-		# the first pass can make more code worth translating: repeat until the image is current
-		# a failed pass leaves the image as it was (still used): a warning, not the end of the setup
-		for _ in 1 2 3; do
-			"$X" aot --device "$DATA/var/device-a64-$DEVICE" update ||
-				echo "setup-vm.sh: a pre-translation pass failed; the phone runs on the image as it is" >&2
-			[[ $(aot_status) == *"(current)"* ]] && break
-		done
-		aot_status
-	fi
+	log "Pre-translating the runtime's code, so apps do not translate it as they run"
+	# the first pass can make more code worth translating: repeat until the image is current
+	# a failed pass leaves the image as it was (still used): a warning, not the end of the setup
+	for _ in 1 2 3; do
+		"$X" aot --device "$DATA/var/device-a64-$DEVICE" update ||
+			echo "setup-vm.sh: a pre-translation pass failed; the phone runs on the image as it is" >&2
+		[[ $(aot_status) == *"(current)"* ]] && break
+	done
+	aot_status
 fi
 
 log "Done. Start the phone with:  scripts/phone.sh start $DEVICE && scripts/phone.sh wait $DEVICE"

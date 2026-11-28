@@ -779,6 +779,7 @@ pub fn apps(dev: &Device, all: bool) -> Result<String> {
 pub fn install(dev: &Device, path: &Path) -> Result<String> {
     let app = crate::ipa::prepare(path)?;
     phone::x86sim_ok(dev, &["install", &app.path.to_string_lossy()])?;
+    phone::refresh_penv(dev);
     Ok(format!("installed {}", app.bundle_id))
 }
 
@@ -791,7 +792,16 @@ pub fn uninstall(dev: &Device, bundle: &str) -> Result<String> {
 pub fn wait(dev: &Device, text: &str, timeout: Duration, gone: bool) -> Result<String> {
     let start = Instant::now();
     loop {
-        let s = ax::snapshot(dev)?;
+        // a phone that is up but busy (SpringBoard still starting, or slow to answer) is asked again until the timeout;
+        // one that is not running fails at once
+        let s = match ax::snapshot(dev) {
+            Ok(s) => s,
+            Err(_) if phone::is_running(dev) && start.elapsed() <= timeout => {
+                std::thread::sleep(Duration::from_millis(500));
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
         let hit = ax::find(&s, text);
         match (hit, gone) {
             (Some(e), false) => return Ok(format!("found {}", describe(e))),

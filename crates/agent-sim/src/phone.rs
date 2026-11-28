@@ -145,7 +145,7 @@ pub fn home() -> Result<PathBuf> {
 }
 
 /// The x86Sim release new setups install.
-const X86SIM_DEFAULT: &str = "0.7.1";
+const X86SIM_DEFAULT: &str = "0.7.3";
 
 /// x86Sim's launcher (the unpacked AppImage's AppRun): `$X86SIM_VERSION`'s, else the default release's, else the
 /// newest release installed. A machine set up before the default moved keeps working on what it has until
@@ -305,6 +305,20 @@ pub fn scripts() -> Result<PathBuf> {
         return Ok(installed);
     }
     bail!("agent-sim's scripts are not found; set AGENT_SIM_SCRIPTS")
+}
+
+/// Rewrites the per-program environment x86Sim applies as each phone process starts (phone.sh penv), so an app
+/// installed after the phone booted gets its own code cache too. Best effort: quiet, and a failure only leaves the
+/// app on the shared one.
+pub fn refresh_penv(dev: &Device) {
+    if let Ok(dir) = scripts() {
+        let _ = Command::new(dir.join("phone.sh"))
+            .args(["penv", &short_name(dev)])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
 }
 
 /// Runs a script from agent-sim's scripts directory, passing its output through.

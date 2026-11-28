@@ -1,6 +1,6 @@
 # Fixes to x86Sim
 
-Patches against x86Sim's tagged source (currently `v0.7.1`), built and installed by `scripts/patch-x86sim.sh`
+Patches against x86Sim's tagged source (currently `v0.7.3`), built and installed by `scripts/patch-x86sim.sh`
 (`scripts/setup-vm.sh` runs it unless `AGENT_SIM_PATCH_X86SIM=0`). They change x86Sim's code, so they are under
 x86Sim's license, GPL-3.0-or-later, and are meant to go upstream; each one is dropped here once an x86Sim release
 includes it.
@@ -11,9 +11,9 @@ own translator is used. A newer x86Sim release therefore never breaks setup.
 
 | Patch | Upstream |
 |---|---|
-| `0001-guest-stacks-of-new-threads.patch` | not yet sent; does not apply to v0.7.1 (the code changed); whether v0.7.1 still crashes on web workers was not tested |
-| `0002-keep-the-fault-handler-after-guest-sigaction.patch` | fixed upstream by [6433b48](https://github.com/x86sim/x86sim/commit/6433b48); no longer applies to v0.7.1 |
-| `0003-release-unused-reservation-tails.patch` | merged as [x86sim/x86sim#24](https://github.com/x86sim/x86sim/pull/24) (in v0.7.0); no longer applies to v0.7.1 |
+| `0001-guest-stacks-of-new-threads.patch` | not yet sent; does not apply to v0.7.3 (the code changed) |
+| `0002-keep-the-fault-handler-after-guest-sigaction.patch` | fixed upstream by [6433b48](https://github.com/x86sim/x86sim/commit/6433b48); no longer applies to v0.7.3 |
+| `0003-release-unused-reservation-tails.patch` | merged as [x86sim/x86sim#24](https://github.com/x86sim/x86sim/pull/24) (in v0.7.0); no longer applies to v0.7.3 |
 
 | Patch | What it fixes |
 |---|---|
